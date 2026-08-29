@@ -1,0 +1,76 @@
+name: plugins
+
+on:
+  push:
+    branches: [main]
+    paths: ['plugins/**', 'scripts/**', '.github/workflows/plugins.yml']
+  pull_request:
+    paths: ['plugins/**', 'scripts/**', '.github/workflows/plugins.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: plugins-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # main 上发布 Release 并回写 registry.json
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # 安装 + 构建 + 打包（CI 与本地同一条命令）
+      - run: node scripts/build-all.mjs
+
+      # 由构建产物重建 registry 索引（main 与 PR 都生成，PR 上用于校验产物完整性）
+      - run: node scripts/build-registry.mjs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packs
+          path: build/packs/
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: packs
+          path: build/packs/
+
+      - name: Rebuild registry.json (sha256 from uploaded packs)
+        run: node scripts/build-registry.mjs
+
+      # 滚动 Release：tag 固定为 latest，registry.json 的下载链接永远有效
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view latest >/dev/null 2>&1 || gh release create latest --title "Plugin packs" --notes "Automated plugin packs. registry.json 指向本 Release 的 latest/download 直链。" --latest
+          gh release upload latest build/packs/*.zip --clobber
+
+      - name: Commit registry.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet registry.json; then
+            echo "registry.json unchanged"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add registry.json
+            git commit -m "chore: update registry.json [skip ci]"
+            git pull --rebase origin ${{ github.ref_name }}
+            git push origin HEAD:${{ github.ref_name }}
+          fi

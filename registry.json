@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "plugins": [
+    {
+      "id": "lyric-workshop",
+      "name": "歌词工坊",
+      "version": "1.0.0",
+      "description": "网易云 / QQ音乐 / 酷狗 富歌词搜索与批量下载（LRC / QRC / YRC / KRC / TTML，逐词高亮）",
+      "download": "https://github.com/625673575/juicy_plugins/releases/latest/download/lyric-workshop-1.0.0.zip",
+      "sha256": "da99e79f3367525fb442c6f1e0e76d853e8c58abf44514f57814f07c39235e7e"
+    }
+  ]
+}
