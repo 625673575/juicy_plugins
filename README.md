@@ -58,3 +58,7 @@ node scripts/build-registry.mjs       # 由打包产物重建 registry.json
 ```
 
 开发单个插件：进 `plugins/<id>/` 直接 `npm run dev`（Vite dev server，与插件形态共用同一套后端业务代码）。
+
+## 与宿主数据交互
+
+插件页面与 JuicyPlayer 宿主之间有三条通道：native bridge + resource provider（读写本地数据）、node backend（本地代理/加解密）、宿主常驻 HTTP API（曲库/播放/队列/歌词/DSP，`http://127.0.0.1:8080/api/v1`，CORS 全开）。完整参考：[docs/player-api.md](docs/player-api.md)。
