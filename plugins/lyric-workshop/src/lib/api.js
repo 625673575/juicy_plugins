@@ -95,6 +95,30 @@ export async function copyText(text) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// JuicyPlayer host library (local HTTP API, CORS open; see the repo's
+// docs/player-api.md). Port is injected by the host when it differs from the
+// default 8080.
+
+const HOST_API_BASE =
+  typeof window !== 'undefined' && window.__JUICY_HTTP_PORT__
+    ? `http://127.0.0.1:${window.__JUICY_HTTP_PORT__}/api/v1`
+    : 'http://127.0.0.1:8080/api/v1';
+
+/** Curated library folders known to the host (sidebar sources). */
+export async function fetchLibraryFolders() {
+  const json = await fetchJson(`${HOST_API_BASE}/library/folders`, 8000);
+  if (json.status !== 'ok') throw new Error(json.message || 'library folders failed');
+  return json.data || [];
+}
+
+/** Tracks of one library folder (index from fetchLibraryFolders). */
+export async function fetchLibraryFolderTracks(index) {
+  const json = await fetchJson(`${HOST_API_BASE}/library/folders/${index}/tracks?limit=500`, 12000);
+  if (json.status !== 'ok') throw new Error(json.message || 'library tracks failed');
+  return json.data || [];
+}
+
 export const PLATFORMS = [
   { id: 'netease', label: '网易云' },
   { id: 'qq', label: 'QQ音乐' },

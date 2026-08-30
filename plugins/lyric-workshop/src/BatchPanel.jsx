@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { PLATFORMS, searchSongs, fetchLyric, downloadText } from './lib/api.js';
+import { PLATFORMS, searchSongs, fetchLyric, downloadText, fetchLibraryFolders, fetchLibraryFolderTracks } from './lib/api.js';
 import { parseLyric } from './lib/parser/parse.js';
 import { buildDownloadLyric } from './lib/parser/serialize.js';
 import { pickBestCandidate, buildSearchKeyword } from './lib/match.js';
@@ -12,18 +12,19 @@ import {
   writeTextNextTo,
   readTextNextTo,
   supportsDirectoryPicker,
+  isDemucsStemBase,
 } from './lib/filelib.js';
-import { t as tx } from './i18n.js';
+import { t as tx, lang } from './i18n.js';
 
 const t = tx;
 
 const RAW_EXT = { yrc: 'yrc', qrc: 'qrc', krc: 'krc', lys: 'lys', lrc: 'lrc', ttml: 'ttml' };
 
 const EXPORT_TARGETS = [
-  { id: 'lrc', label: 'LRC 双语', ext: 'lrc' },
-  { id: 'enhanced-lrc', label: 'Enhanced LRC', ext: 'lrc' },
-  { id: 'ttml', label: 'TTML', ext: 'ttml' },
-  { id: 'raw', label: 'RAW 原始', ext: null },
+  { id: 'lrc', label: 'LRC 双语', labelEn: 'LRC bilingual', ext: 'lrc' },
+  { id: 'enhanced-lrc', label: 'Enhanced LRC', labelEn: 'Enhanced LRC', ext: 'lrc' },
+  { id: 'ttml', label: 'TTML', labelEn: 'TTML', ext: 'ttml' },
+  { id: 'raw', label: 'RAW 原始', labelEn: 'RAW original', ext: null },
 ];
 
 const BATCH_PARAMS =
@@ -111,32 +112,35 @@ async function seedDemoFolder(root, log) {
   await root.removeEntry('Demo 音乐', { recursive: true }).catch(() => {});
   const dir = await root.getDirectoryHandle('Demo 音乐', { create: true });
   // 1) 带 ID3 标签（真实标签读取路径）
-  const mp3 = makeTaggedMp3({ title: '晴天', artist: '周杰伦', album: '叶惠美', durMs: 236940 });
+  const mp3 = makeTaggedMp3({ title: lang() === 'en' ? 'Sunny Day' : '晴天', artist: lang() === 'en' ? 'Jay Chou' : '周杰伦', album: lang() === 'en' ? 'Ye Hui Mei' : '叶惠美', durMs: 236940 });
+  const songName = lang() === 'en' ? '01. Jay Chou - Sunny Day.mp3' : '01. 周杰伦 - 晴天.mp3';
   {
-    const fh = await dir.getFileHandle('01. 周杰伦 - 晴天.mp3', { create: true });
+    const fh = await dir.getFileHandle(songName, { create: true });
     const w = await fh.createWritable();
     await w.write(mp3);
     await w.close();
   }
   // 2) 无标签 → 走文件名解析
   {
-    const fh = await dir.getFileHandle('陈奕迅 - 孤勇者.flac', { create: true });
+    const n = lang() === 'en' ? 'Eason Chan - Lone Warrior.flac' : '陈奕迅 - 孤勇者.flac';
+    const fh = await dir.getFileHandle(n, { create: true });
     const w = await fh.createWritable();
     await w.write(new Uint8Array([0x66, 0x4c, 0x61, 0x43, 0, 0, 0, 0]));
     await w.close();
   }
   // 3) 已有同名 .lrc → 应标记「已有歌词」
   {
-    const fh = await dir.getFileHandle('02. 五月天 - 温柔.mp3', { create: true });
+    const n = lang() === 'en' ? '02. Mayday - Tenderness.mp3' : '02. 五月天 - 温柔.mp3';
+    const fh = await dir.getFileHandle(n, { create: true });
     const w = await fh.createWritable();
     await w.write(new Uint8Array([0, 0, 0, 0]));
     await w.close();
-    const lh = await dir.getFileHandle('02. 五月天 - 温柔.lrc', { create: true });
+    const lh = await dir.getFileHandle(n.replace(/\.mp3$/, '.lrc'), { create: true });
     const lw = await lh.createWritable();
     await lw.write('[00:00.00]existing lyric');
     await lw.close();
   }
-  log('✓ 演示文件夹已就绪（OPFS 沙盒，含 3 个文件，其中 1 个已有歌词）');
+  log('✓ ' + (lang() === 'en' ? 'Demo folder ready (OPFS sandbox, 3 files, 1 with existing lyrics)' : '演示文件夹已就绪（OPFS 沙盒，含 3 个文件，其中 1 个已有歌词）'));
   return dir;
 }
 
@@ -154,7 +158,7 @@ const S = {
 
 export default function BatchPanel({ health }) {
   const [dirName, setDirName] = useState('');
-  const [items, setItems] = useState([]); // {key,name,base,ext,path,file,dirHandle,state,note,fileName}
+  const [items, setItems] = useState([]); // {key,name,base,ext,path,file,dirHandle,meta?,state,note,fileName}
   const [scanning, setScanning] = useState(false);
   const [platform, setPlatform] = useState(
     PLATFORMS.some((p) => p.id === BATCH_PARAMS.get('bplatform')) ? BATCH_PARAMS.get('bplatform') : 'netease'
@@ -168,6 +172,12 @@ export default function BatchPanel({ health }) {
   const [progress, setProgress] = useState({ done: 0, total: 0, current: '' });
   const [logs, setLogs] = useState([]);
   const [unsupported, setUnsupported] = useState(false);
+  // JuicyPlayer 曲库来源（宿主 HTTP API）
+  const [folders, setFolders] = useState(null);
+  const [folderIdx, setFolderIdx] = useState('');
+  const [libLoading, setLibLoading] = useState(false);
+  // 右键菜单：{x,y,item}
+  const [ctx, setCtx] = useState(null);
 
   const itemsRef = useRef([]);
   const cancelRef = useRef(false);
@@ -219,83 +229,57 @@ export default function BatchPanel({ health }) {
     }
   }, [applyDir, log, running]);
 
-  // ---- 批量执行 ----
-  const runBatch = useCallback(async () => {
-    const cur = itemsRef.current;
-    const targets = cur.filter((it) =>
-      overwrite || it.state === S.PENDING || it.state === S.MISS || it.state === S.ERROR
-    );
-    const pending = targets.filter((it) => it.state !== S.EXISTS);
-    if (pending.length === 0) {
-      log(t('batch.none'));
-      return;
-    }
-    setRunning(true);
-    cancelRef.current = false;
-    setProgress({ done: 0, total: pending.length, current: '' });
-    log(
-      `▶ ${t('batch.start', {
-        n: pending.length,
-        platform: fallback ? `${platformLabel(platform)}+${t('batch.fallbackShort')}` : platformLabel(platform),
-        format,
-      })}`
-    );
+  const platformLabel = (id) => PLATFORMS.find((p) => p.id === id)?.label ?? id;
 
-    const platformChain = fallback
-      ? [platform, ...PLATFORMS.map((p) => p.id).filter((p) => p !== platform)]
-      : [platform];
+  // ---- 单曲处理（批量循环与右键单首下载共用同一配置链路）----
+  const processOneItem = useCallback(
+    async (item, { force }) => {
+      const platformChain = fallback
+        ? [platform, ...PLATFORMS.map((p) => p.id).filter((p) => p !== platform)]
+        : [platform];
 
-    /** 在单个平台上完成 搜索→打分→拉词→构建；返回 {status, best?, built?, lyData?} */
-    const tryPlatform = async (platformId, meta) => {
-      const kw = buildSearchKeyword(meta.title, meta.artists, meta.artist);
-      const res = await searchSongs(platformId, kw, 20, 1);
-      const best = pickBestCandidate(
-        res.songs.map((s) => ({
-          name: s.name,
-          artist: s.artist,
-          album: s.album,
-          duration: s.durationMs,
-          song: s,
-        })),
-        meta
-      );
-      if (!best) return { status: 'no-match', kw };
-      const ly = await fetchLyric(best.song);
-      if (!ly.data) return { status: 'no-lyric', kw };
-      const built = buildExport(ly.data, format);
-      if (!built) return { status: 'no-content', kw };
-      return { status: 'ok', best, built, kw };
-    };
+      /** 在单个平台上完成 搜索→打分→拉词→构建；返回 {status, best?, built?, kw} */
+      const tryPlatform = async (platformId, meta) => {
+        const kw = buildSearchKeyword(meta.title, meta.artists, meta.artist);
+        const res = await searchSongs(platformId, kw, 20, 1);
+        const best = pickBestCandidate(
+          res.songs.map((s) => ({
+            name: s.name,
+            artist: s.artist,
+            album: s.album,
+            duration: s.durationMs,
+            song: s,
+          })),
+          meta
+        );
+        if (!best) return { status: 'no-match', kw };
+        const ly = await fetchLyric(best.song);
+        if (!ly.data) return { status: 'no-lyric', kw };
+        const built = buildExport(ly.data, format);
+        if (!built) return { status: 'no-content', kw };
+        return { status: 'ok', best, built, kw };
+      };
 
-    const written = [];
-    let done = 0;
-    let okCount = 0;
-    for (const item of pending) {
-      if (cancelRef.current) {
-        log(`■ ${t('batch.cancelled')}`);
-        break;
-      }
-      setProgress((p) => ({ ...p, current: item.path }));
       patchItem(item.key, { state: S.MATCHING, note: '' });
       try {
-        // 1) 元数据：标签优先，文件名兜底
-        const tags = await readAudioTags(item.file, item.ext);
-        const fn = parseFilename(item.base);
-        const title = (tags?.title || fn.title || '').trim();
-        const artist = (tags?.artist || fn.artist || '').trim();
-        const artists = artist ? artist.split(/[/、,，]/).map((s) => s.trim()).filter(Boolean) : [];
-        const meta = {
-          title,
-          artists,
-          artist,
-          album: (tags?.album || '').trim(),
-          durationMs: tags?.durationMs || 0,
-        };
-        if (!title) {
+        // 1) 元数据：曲库来源自带；本地文件走标签优先、文件名兜底
+        let meta = item.meta;
+        if (!meta) {
+          const tags = await readAudioTags(item.file, item.ext);
+          const fn = parseFilename(item.base);
+          const title = (tags?.title || fn.title || '').trim();
+          const artist = (tags?.artist || fn.artist || '').trim();
+          meta = {
+            title,
+            artists: artist.split(/[、,，]/).map((s) => s.trim()).filter(Boolean),
+            artist,
+            album: (tags?.album || '').trim(),
+            durationMs: tags?.durationMs || 0,
+          };
+        }
+        if (!meta.title) {
           patchItem(item.key, { state: S.MISS, note: t('batch.note.noTitle') });
-          done++;
-          setProgress((p) => ({ ...p, done }));
-          continue;
+          return { ok: false };
         }
 
         // 2) 依平台链依次尝试（网易云匿名搜索对热门歌常被翻唱刷屏，回退很关键）
@@ -324,9 +308,7 @@ export default function BatchPanel({ health }) {
               : t('batch.note.noMatch', { kw: (result?.kw || meta.title).slice(0, 40) });
           patchItem(item.key, { state: S.MISS, note });
           log(`· ${item.path} → ${note}${reasons.length ? ` (${reasons.join(' / ')})` : ''}`);
-          done++;
-          setProgress((p) => ({ ...p, done }));
-          continue;
+          return { ok: false };
         }
 
         // 3) 写回（不支持写回的目录则逐个下载）
@@ -342,18 +324,57 @@ export default function BatchPanel({ health }) {
           note: `${platformLabel(usedPlatform)} · “${best.name}” · ${best.artist}`,
           fileName,
         });
-        written.push({ item, fileName, text: built.text });
-        okCount++;
         log(`✓ ${item.path} → ${fileName}`);
-        done++;
-        setProgress((p) => ({ ...p, done }));
-        await new Promise((r) => setTimeout(r, 350));
+        return { ok: true, fileName };
       } catch (err) {
         patchItem(item.key, { state: S.ERROR, note: err?.message || String(err) });
         log(`⚠ ${item.path}: ${err?.message || err}`);
-        done++;
-        setProgress((p) => ({ ...p, done }));
+        return { ok: false };
       }
+    },
+    // platformLabel 为组件内稳定纯函数，不列入依赖
+    [fallback, format, log, patchItem, platform]
+  );
+
+  // ---- 批量执行 ----
+  const runBatch = useCallback(async () => {
+    const cur = itemsRef.current;
+    const targets = cur.filter((it) =>
+      overwrite || it.state === S.PENDING || it.state === S.MISS || it.state === S.ERROR
+    );
+    const pending = targets.filter((it) => it.state !== S.EXISTS);
+    if (pending.length === 0) {
+      log(t('batch.none'));
+      return;
+    }
+    setRunning(true);
+    cancelRef.current = false;
+    setProgress({ done: 0, total: pending.length, current: '' });
+    log(
+      `▶ ${t('batch.start', {
+        n: pending.length,
+        platform: fallback ? `${platformLabel(platform)}+${t('batch.fallbackShort')}` : platformLabel(platform),
+        format,
+      })}`
+    );
+
+    const written = [];
+    let done = 0;
+    let okCount = 0;
+    for (const item of pending) {
+      if (cancelRef.current) {
+        log(`■ ${t('batch.cancelled')}`);
+        break;
+      }
+      setProgress((p) => ({ ...p, current: item.path }));
+      const res = await processOneItem(item, { force: overwrite });
+      if (res.ok) {
+        written.push({ item, fileName: res.fileName });
+        okCount++;
+      }
+      done++;
+      setProgress((p) => ({ ...p, done }));
+      if (res.ok) await new Promise((r) => setTimeout(r, 350));
     }
 
     setRunning(false);
@@ -370,11 +391,90 @@ export default function BatchPanel({ health }) {
         log(`⚠ verify: ${err?.message || err}`);
       }
     }
-  }, [format, log, overwrite, patchItem, platform]);
+  }, [log, overwrite, processOneItem]);
 
   const onCancel = useCallback(() => {
     cancelRef.current = true;
   }, []);
+
+  // ---- JuicyPlayer 曲库来源（宿主 HTTP API）----
+  const onPickLibrary = useCallback(async () => {
+    if (running || libLoading || health !== 'ok') return;
+    setLibLoading(true);
+    try {
+      const f = await fetchLibraryFolders();
+      setFolders(f);
+      if (f.length > 0) setFolderIdx(String(f[0].index));
+      log(`✓ ${t('batch.libLoaded', { n: f.length })}`);
+    } catch (err) {
+      log(`⚠ ${t('batch.libFail')}: ${err?.message || err}`);
+    } finally {
+      setLibLoading(false);
+    }
+  }, [health, libLoading, log, running]);
+
+  const onLoadLibraryFolder = useCallback(async () => {
+    if (running || scanning || folderIdx === '') return;
+    setScanning(true);
+    try {
+      const tracks = await fetchLibraryFolderTracks(Number(folderIdx));
+      const folderName = (folders || []).find((f) => String(f.index) === folderIdx)?.name || 'library';
+      const mapped = tracks
+        .filter((tr) => tr.filePath || tr.title)
+        .map((tr, i) => {
+          const filePath = tr.filePath || `${tr.title}.mp3`;
+          const name = filePath.split(/[\\/]/).pop();
+          const dot = name.lastIndexOf('.');
+          const base = dot > 0 ? name.slice(0, dot) : name;
+          return {
+            key: `lib#${tr.id || i}#${i}`,
+            name,
+            base,
+            ext: (dot > 0 ? name.slice(dot + 1) : 'mp3').toLowerCase(),
+            path: filePath,
+            file: null,
+            dirHandle: null,
+            meta: {
+              title: tr.title || base,
+              artists: (tr.artist || '').split(/[、,，]/).map((s) => s.trim()).filter(Boolean),
+              artist: tr.artist || '',
+              album: tr.album || '',
+              durationMs: Math.round((tr.duration || 0) * 1000),
+            },
+            state: S.PENDING,
+          };
+        })
+        .filter((it) => !isDemucsStemBase(it.base)); // demucs 分离产物不入列
+      setDirName(`🎵 JuicyPlayer · ${folderName}`);
+      setItems(mapped);
+      log(`✓ ${t('batch.libTracks', { n: mapped.length, name: folderName })}`);
+    } catch (err) {
+      log(`⚠ ${err?.message || err}`);
+    } finally {
+      setScanning(false);
+    }
+  }, [folderIdx, folders, running, scanning]);
+
+  // ---- 右键菜单：单首下载（沿用批量配置，强制覆盖）----
+  useEffect(() => {
+    if (!ctx) return undefined;
+    const close = () => setCtx(null);
+    window.addEventListener('click', close);
+    window.addEventListener('scroll', close, true);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('scroll', close, true);
+    };
+  }, [ctx]);
+
+  const onCtxDownload = useCallback(
+    async (item) => {
+      if (running || health !== 'ok') return;
+      setCtx(null);
+      await processOneItem(item, { force: true });
+    },
+    [health, processOneItem, running]
+  );
 
   // ---- 深链：?view=batch&demo=1[&autostart=1] 自动扫描（并可自动批量）----
   useEffect(() => {
@@ -399,8 +499,6 @@ export default function BatchPanel({ health }) {
   // runBatch 的 ref，供 demo 自动启动用（避免把回调加进依赖造成重跑）
   const runBatchRef = useRef(null);
   runBatchRef.current = runBatch;
-
-  const platformLabel = (id) => PLATFORMS.find((p) => p.id === id)?.label ?? id;
 
   // ---- 汇总 ----
   const counts = items.reduce(
@@ -450,7 +548,7 @@ export default function BatchPanel({ health }) {
           <span>{t('batch.format')}</span>
           <select value={format} onChange={(e) => setFormat(e.target.value)} disabled={running}>
             {EXPORT_TARGETS.map((f) => (
-              <option key={f.id} value={f.id}>{f.label}</option>
+              <option key={f.id} value={f.id}>{lang() === 'en' && f.labelEn ? f.labelEn : f.label}</option>
             ))}
           </select>
         </label>
@@ -480,6 +578,27 @@ export default function BatchPanel({ health }) {
         )}
       </div>
 
+      {/* JuicyPlayer 曲库来源 */}
+      <div className="batch-toolbar secondary">
+        <button type="button" className="btn" onClick={onPickLibrary} disabled={running || health !== 'ok' || libLoading}>
+          🎵 {libLoading ? '…' : t('batch.library')}
+        </button>
+        {folders && folders.length > 0 && (
+          <>
+            <select value={folderIdx} onChange={(e) => setFolderIdx(e.target.value)} disabled={running}>
+              {folders.map((f) => (
+                <option key={f.index} value={String(f.index)}>
+                  {f.name} ({f.trackCount})
+                </option>
+              ))}
+            </select>
+            <button type="button" className="btn" onClick={onLoadLibraryFolder} disabled={running || scanning}>
+              {t('batch.libLoad')}
+            </button>
+          </>
+        )}
+      </div>
+
       {(running || progress.total > 0) && (
         <div className="batch-progress">
           <div className="batch-progress-bar">
@@ -506,7 +625,14 @@ export default function BatchPanel({ health }) {
         )}
         {scanning && <div className="status-line">{t('batch.scanning')}</div>}
         {items.map((it) => (
-          <div key={it.key} className={`batch-row st-${it.state}`}>
+          <div
+            key={it.key}
+            className={`batch-row st-${it.state}`}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setCtx({ x: e.clientX, y: e.clientY, item: it });
+            }}
+          >
             <div className="batch-row-main">
               <span className="batch-row-name" title={it.path}>{it.name}</span>
               <span className="batch-row-note">{it.note || ''}</span>
@@ -515,6 +641,15 @@ export default function BatchPanel({ health }) {
           </div>
         ))}
       </div>
+
+      {/* 右键菜单：单首下载 */}
+      {ctx && (
+        <div className="ctx-menu" style={{ left: ctx.x, top: ctx.y }}>
+          <button type="button" disabled={running || health !== 'ok'} onClick={() => onCtxDownload(ctx.item)}>
+            ⬇ {t('batch.ctxDownload')}
+          </button>
+        </div>
+      )}
 
       {/* 日志 */}
       {logs.length > 0 && (

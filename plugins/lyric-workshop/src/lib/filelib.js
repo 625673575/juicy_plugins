@@ -5,6 +5,10 @@
 export const AUDIO_EXTS = ['mp3', 'flac', 'm4a', 'aac', 'wav', 'ogg', 'oga', 'opus', 'ape', 'wma'];
 export const LYRIC_EXTS = ['lrc', 'elrc', 'ttml', 'krc', 'yrc', 'qrc', 'trc'];
 
+/** Matches Demucs/separation stem names ("song_vocal", "song_novocals2", ...). */
+export const isDemucsStemBase = (base) =>
+  /_(vocal|no_?vocal|novocals?|accompaniment|instrumental|other|drums|bass)\d*$/i.test(base);
+
 export const supportsDirectoryPicker = () =>
   typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function';
 
@@ -47,6 +51,12 @@ export async function scanDirectory(dirHandle, onProgress, opts = {}) {
       const ext = dot >= 0 ? entry.name.slice(dot + 1).toLowerCase() : '';
       const base = dot >= 0 ? entry.name.slice(0, dot) : entry.name;
       if (AUDIO_EXTS.includes(ext)) {
+        // Skip DAW/Demucs output stems (e.g. "song_vocal.wav", "song_novocals.wav",
+        // "song_accompaniment2.wav") — they are separation artifacts, never the
+        // original track, and must not enter the lyrics list.
+        if (isDemucsStemBase(base)) {
+          continue;
+        }
         let file = null;
         try {
           file = await entry.getFile();

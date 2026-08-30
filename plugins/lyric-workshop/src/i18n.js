@@ -110,6 +110,12 @@ const DICT = {
     'batch.verify': '写回校验 {file}',
     'batch.unsupported':
       '当前浏览器不支持文件夹写回（File System Access API）。请使用 Edge / Chrome 打开本页选择真实文件夹；此沙盒演示仍可运行。',
+    'batch.library': '🎵 曲库文件夹',
+    'batch.libLoad': '加载曲目',
+    'batch.libLoaded': '已获取曲库文件夹 {n} 个',
+    'batch.libFail': '曲库加载失败',
+    'batch.libTracks': '曲库 {name}：{n} 首',
+    'batch.ctxDownload': '下载歌词（覆盖）',
   },
   en: {
     'meta.title': 'Lyric Studio · Rich Lyrics Downloader',
@@ -191,6 +197,12 @@ const DICT = {
     'batch.verify': 'write-back verified {file}',
     'batch.unsupported':
       'This browser lacks the File System Access API. Use Edge / Chrome to pick a real folder; the sandboxed demo still works.',
+    'batch.library': '🎵 Library folders',
+    'batch.libLoad': 'Load tracks',
+    'batch.libLoaded': 'Loaded {n} library folder(s)',
+    'batch.libFail': 'Failed to load library folders',
+    'batch.libTracks': 'Library {name}: {n} track(s)',
+    'batch.ctxDownload': 'Download lyrics (overwrite)',
   },
 };
 
