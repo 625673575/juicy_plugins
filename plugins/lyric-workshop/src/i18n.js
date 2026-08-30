@@ -1,13 +1,31 @@
-// Minimal i18n: detect browser language and serve zh / en strings.
-// Chinese (zh / zh-CN / ...) -> Chinese, everything else -> English.
+// Minimal i18n: user-persisted choice wins (localStorage), otherwise detect
+// the browser language. Chinese (zh / zh-CN / ...) -> zh, everything else -> en.
+
+const LANG_KEY = 'lyric-workshop.lang';
 
 export function lang() {
+  try {
+    const saved = localStorage.getItem(LANG_KEY);
+    if (saved === 'zh' || saved === 'en') return saved;
+  } catch {
+    /* storage unavailable (sandboxed iframe etc.) — fall through to detection */
+  }
   const nav = typeof navigator !== 'undefined' ? navigator : null;
   const raw =
     (nav && (nav.language || nav.userLanguage || nav.browserLanguage)) ||
     (typeof document !== 'undefined' && document.documentElement.lang) ||
     'zh';
   return String(raw).toLowerCase().startsWith('zh') ? 'zh' : 'en';
+}
+
+/** Persist the user's language choice; pass null/undefined to go back to auto. */
+export function setLang(l) {
+  try {
+    if (l === 'zh' || l === 'en') localStorage.setItem(LANG_KEY, l);
+    else localStorage.removeItem(LANG_KEY);
+  } catch {
+    /* ignore */
+  }
 }
 
 // Dictionary keyed by stable ids. zh is the source (UI 主文案), en mirrors it.

@@ -2,6 +2,8 @@
 
 JuicyPlayer 的社区插件仓库。每个 `plugins/<id>/` 目录是一个独立插件，CI 自动构建并发布 zip；播放器拉取本仓库根的 `registry.json` 展示可下载插件列表，下载解压后自动出现在「工具」菜单里。
 
+English summary below — 中文为主，契约一致。
+
 ## 插件契约
 
 一个插件 = `plugins/<id>/` 目录，至少包含：
@@ -22,19 +24,23 @@ plugins/<id>/
   "version": "1.0.0",
   "description": "一句话说明",
   "entry": "dist/index.html",
+  "window": { "width": 1280, "height": 800 },
   "backend": { "type": "node", "entry": "server/server.mjs" }
 }
 ```
 
 - `id` 必须与目录名一致，ASCII 字母 / 数字 / 中划线
 - `version` 走 semver，升级发版就改这里
+- `window` 可选：插件窗口的初始 `width`/`height`（320–3840 × 240–2160）；**缺省时窗口与播放器主窗口一样大**。AI 生成的工具（无 plugin.json）默认 1100×720
 - `backend` 可选，见下文「node 后端」
 
 **宿主如何识别**：插件 zip 解压到 `%APPDATA%/JuicyPlayer/tools/<id>/` 后，只要 `dist/index.html` 存在就会被自动扫描并出现在 Tools 弹窗（`plugin.json` 提供显示名与描述）。
 
 **zip 布局**：根目录即插件根（`plugin.json`、`dist/`、`server/` 在 zip 根），由 `scripts/pack.mjs` 生成，宿主解压一步到位。
 
-**node 后端**：声明的 `backend.entry` 会由宿主用内置 Node 启动（`node server/server.mjs --port <空闲端口>`，只绑 127.0.0.1），宿主把端口注入页面 `window.__JUICY_API_PORT__`；需要本地 API 的插件（如跨域代理、加解密中转）用它。宿主**不接受任意命令行**，只接受 node + 插件目录内的相对入口。参考实现：`plugins/lyric-workshop/server/server.mjs`。
+**node 后端**：声明的 `backend.entry` 会由宿主用内置 Node 启动（`node server/server.mjs --port <空闲端口>`，只绑 127.0.0.1），就绪后向 stdout 打一行 `READY <port>`，宿主把端口注入页面 `window.__JUICY_API_PORT__`；需要本地 API 的插件（如跨域代理、加解密中转）用它。宿主**不接受任意命令行**，只接受 node + 插件目录内的相对入口。参考实现：`plugins/lyric-workshop/server/server.mjs`。
+
+**界面语言**：由插件前端自理。惯例（参考 `lyric-workshop`）：默认按浏览器语言自动选择中文/英文，并在 UI 里提供切换按钮（`localStorage` 持久化）。
 
 ## 第三方贡献
 
@@ -62,3 +68,15 @@ node scripts/build-registry.mjs       # 由打包产物重建 registry.json
 ## 与宿主数据交互
 
 插件页面与 JuicyPlayer 宿主之间有三条通道：native bridge + resource provider（读写本地数据）、node backend（本地代理/加解密）、宿主常驻 HTTP API（曲库/播放/队列/歌词/DSP，`http://127.0.0.1:8080/api/v1`，CORS 全开）。完整参考：[docs/player-api.md](docs/player-api.md)。
+
+---
+
+## English
+
+Community plugin repository for JuicyPlayer. Each `plugins/<id>/` directory is one plugin; CI builds and publishes zips to GitHub Releases, and the player fetches `registry.json` (repo root) to list installable plugins. Installed plugins appear automatically in the player's Tools menu.
+
+**Plugin contract**: a `plugin.json` manifest (`id` matching the directory name, semver `version`, `name`, `description`, `entry: dist/index.html`), optional `window` `{width,height}` for the initial window size (defaults to the main window's size when omitted), and an optional `backend` `{type:"node", entry}` — a Node script the host launches on a free loopback port (port injected into the page as `window.__JUICY_API_PORT__`). The zip layout is plugin-root-at-zip-root; after unpacking to `%APPDATA%/JuicyPlayer/tools/<id>/` the existing tools scan picks it up. UI language is handled by the plugin frontend (auto-detect browser language + in-app switch, see `lyric-workshop`).
+
+**Contributing**: fork, add `plugins/<your-plugin>/` mirroring `lyric-workshop`, verify with `node scripts/build-all.mjs <id>`, open a PR. CI builds on PRs; merging to main publishes a rolling `latest` Release and rewrites `registry.json`.
+
+**Host data interfaces**: see [docs/player-api.md](docs/player-api.md) (native bridge + resource provider, node backend, and the player's HTTP API at `http://127.0.0.1:8080/api/v1`).

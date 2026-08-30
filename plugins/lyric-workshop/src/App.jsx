@@ -17,7 +17,7 @@ import {
 import { parseLyric, detectFormat } from './lib/parser/parse.js';
 import { buildDownloadLyric, extOfTarget } from './lib/parser/serialize.js';
 import BatchPanel from './BatchPanel.jsx';
-import { t as tx } from './i18n.js';
+import { t as tx, lang, setLang } from './i18n.js';
 
 const t = tx;
 
@@ -183,6 +183,14 @@ export default function App() {
   // ---- 服务状态 / 搜索 ----
   const [health, setHealth] = useState('checking'); // checking | ok | off
   const [view, setView] = useState(urlView); // search | batch
+  // UI language: zh / en. Persisted by i18n (localStorage); bumping this state
+  // re-renders every t() lookup with the new dictionary.
+  const [uiLang, setUiLang] = useState(lang());
+  const toggleLang = useCallback(() => {
+    const next = uiLang === 'zh' ? 'en' : 'zh';
+    setLang(next);
+    setUiLang(next);
+  }, [uiLang]);
   const [platform, setPlatform] = useState(
     PLATFORMS.some((p) => p.id === urlPlatform) ? urlPlatform : 'netease'
   );
@@ -522,6 +530,14 @@ export default function App() {
               📂 {t('view.batch')}
             </button>
           </div>
+          <button
+            type="button"
+            className="vtab lang-switch"
+            title={uiLang === 'zh' ? 'Switch to English' : '切换到中文'}
+            onClick={toggleLang}
+          >
+            {uiLang === 'zh' ? 'EN' : '中文'}
+          </button>
           <StatusChip tone={health === 'ok' ? 'good' : health === 'off' ? 'warn' : 'muted'}>
             {health === 'ok' ? '● ' + t('status.online') : health === 'off' ? '○ ' + t('status.offline') : '◌ ' + t('status.checking')}
           </StatusChip>
