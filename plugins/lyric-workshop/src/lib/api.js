@@ -120,9 +120,9 @@ export async function fetchLibraryFolderTracks(index) {
 }
 
 export const PLATFORMS = [
-  { id: 'netease', label: '网易云' },
-  { id: 'qq', label: 'QQ音乐' },
-  { id: 'kugou', label: '酷狗' },
+  { id: 'netease', label: 'NetEase' },
+  { id: 'qq', label: 'QQ Music' },
+  { id: 'kugou', label: 'KuGou' },
 ];
 
 export const FORMAT_LABELS = {

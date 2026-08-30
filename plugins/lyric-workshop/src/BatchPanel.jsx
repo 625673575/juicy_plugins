@@ -109,8 +109,9 @@ function makeTaggedMp3({ title, artist, album, durMs }) {
 
 async function seedDemoFolder(root, log) {
   // 每次演示重建目录，保证可重复
-  await root.removeEntry('Demo 音乐', { recursive: true }).catch(() => {});
-  const dir = await root.getDirectoryHandle('Demo 音乐', { create: true });
+  const demoDirName = lang() === 'en' ? 'Demo Music' : 'Demo 音乐';
+  await root.removeEntry(demoDirName, { recursive: true }).catch(() => {});
+  const dir = await root.getDirectoryHandle(demoDirName, { create: true });
   // 1) 带 ID3 标签（真实标签读取路径）
   const mp3 = makeTaggedMp3({ title: lang() === 'en' ? 'Sunny Day' : '晴天', artist: lang() === 'en' ? 'Jay Chou' : '周杰伦', album: lang() === 'en' ? 'Ye Hui Mei' : '叶惠美', durMs: 236940 });
   const songName = lang() === 'en' ? '01. Jay Chou - Sunny Day.mp3' : '01. 周杰伦 - 晴天.mp3';

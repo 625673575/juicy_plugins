@@ -863,7 +863,7 @@ export default function App() {
 
       <footer className="foot-note">
         LRC · ESLRC · QRC · YRC · KRC · TTML parsers ported from SPlayer-Next ·
-        服务端 eapi / musicu.fcg / lyrics.kugou.com 中转由 vite 本地中间件完成
+        platform requests (NetEase eapi / QQ musicu.fcg / KuGou lyrics) are proxied by the plugin's local backend
       </footer>
     </div>
   );

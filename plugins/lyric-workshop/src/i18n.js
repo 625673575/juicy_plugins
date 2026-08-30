@@ -1,5 +1,5 @@
-// Minimal i18n: user-persisted choice wins (localStorage), otherwise detect
-// the browser language. Chinese (zh / zh-CN / ...) -> zh, everything else -> en.
+// Minimal i18n: English by default; the in-app switch persists zh/en to
+// localStorage and the dictionary below keeps the Chinese strings.
 
 const LANG_KEY = 'lyric-workshop.lang';
 
@@ -8,14 +8,9 @@ export function lang() {
     const saved = localStorage.getItem(LANG_KEY);
     if (saved === 'zh' || saved === 'en') return saved;
   } catch {
-    /* storage unavailable (sandboxed iframe etc.) — fall through to detection */
+    /* storage unavailable — fall through */
   }
-  const nav = typeof navigator !== 'undefined' ? navigator : null;
-  const raw =
-    (nav && (nav.language || nav.userLanguage || nav.browserLanguage)) ||
-    (typeof document !== 'undefined' && document.documentElement.lang) ||
-    'zh';
-  return String(raw).toLowerCase().startsWith('zh') ? 'zh' : 'en';
+  return 'en';
 }
 
 /** Persist the user's language choice; pass null/undefined to go back to auto. */

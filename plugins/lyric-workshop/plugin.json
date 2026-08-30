@@ -1,8 +1,8 @@
 {
   "id": "lyric-workshop",
-  "name": "歌词工坊",
-  "version": "1.2.0",
-  "description": "网易云 / QQ音乐 / 酷狗 富歌词搜索与批量下载（LRC / QRC / YRC / KRC / TTML，逐词高亮）",
+  "name": "Lyric Workshop",
+  "version": "1.2.1",
+  "description": "Rich lyrics search and batch download for NetEase / QQ Music / KuGou (LRC / QRC / YRC / KRC / TTML, word-by-word highlighting)",
   "entry": "dist/index.html",
   "backend": {
     "type": "node",
