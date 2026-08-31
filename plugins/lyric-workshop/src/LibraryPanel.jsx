@@ -4,7 +4,7 @@
 // 与 BatchPanel（本地文件夹 + File System Access 写回）共用 matchPipeline
 // 的匹配管线；这里没有目录句柄，写盘一律走后端 /api/save。
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   PLATFORMS,
   dirnameOf,
@@ -45,6 +45,9 @@ export default function LibraryPanel({ health }) {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0, current: '' });
   const [logs, setLogs] = useState([]);
+  // 列表筛选：状态 chips + 文件名文本
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [filterText, setFilterText] = useState('');
   // 单曲保存位置（后端记忆；单曲搜索页的保存也写到这里）
   const [targetDir, setTargetDir] = useState('');
   const [targetDraft, setTargetDraft] = useState('');
@@ -293,6 +296,32 @@ export default function LibraryPanel({ health }) {
     }
   };
 
+  // ---- 汇总：状态计数 / 一键筛选 / 待下载目标数 ----
+  const counts = useMemo(() => {
+    const acc = { all: items.length, pending: 0, exists: 0, done: 0, miss: 0, error: 0 };
+    for (const it of items) {
+      if (acc[it.state] !== undefined) acc[it.state] += 1;
+    }
+    return acc;
+  }, [items]);
+
+  const runTargets = useMemo(
+    () =>
+      items.filter(
+        (it) => overwrite || it.state === S.PENDING || it.state === S.MISS || it.state === S.ERROR
+      ).length,
+    [items, overwrite]
+  );
+
+  const visibleItems = useMemo(() => {
+    const q = filterText.trim().toLowerCase();
+    return items.filter((it) => {
+      if (statusFilter !== 'all' && it.state !== statusFilter) return false;
+      if (q && !`${it.name}\n${it.path}`.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [items, statusFilter, filterText]);
+
   const disabled = health !== 'ok';
 
   return (
@@ -364,8 +393,9 @@ export default function LibraryPanel({ health }) {
             className="btn primary"
             onClick={runBatch}
             disabled={disabled || items.length === 0}
+            title={runTargets === 0 ? t('batch.none') : ''}
           >
-            ⬇ {t('library.run')}
+            ⬇ {runTargets > 0 ? t('library.runCount', { n: runTargets }) : t('library.run')}
           </button>
         )}
       </div>
@@ -402,8 +432,44 @@ export default function LibraryPanel({ health }) {
             />
           </div>
           <span className="mono">
-            {progress.done}/{progress.total} {progress.current ? `· ${progress.current}` : ''}
+            {progress.done}/{progress.total}
+            {progress.total > 0 ? ` · ${Math.round((progress.done / progress.total) * 100)}%` : ''}
+            {progress.current ? ` · ${progress.current}` : ''}
           </span>
+        </div>
+      )}
+
+      {/* 状态筛选行 */}
+      {items.length > 0 && (
+        <div className="filter-bar">
+          <div className="filter-chips">
+            {[
+              ['all', t('filter.all'), counts.all],
+              ['pending', t('batch.st.pending'), counts.pending],
+              ['exists', t('batch.st.exists'), counts.exists],
+              ['done', t('batch.st.done'), counts.done],
+              ['miss', t('batch.st.miss'), counts.miss],
+              ['error', t('batch.st.error'), counts.error],
+            ].map(([id, label, n]) => (
+              <button
+                key={id}
+                type="button"
+                className={`fchip fc-${id}${statusFilter === id ? ' on' : ''}`}
+                disabled={n === 0 && id !== 'all'}
+                onClick={() => setStatusFilter(id)}
+              >
+                {label}
+                <i>{n}</i>
+              </button>
+            ))}
+          </div>
+          <input
+            className="filter-input"
+            value={filterText}
+            placeholder={t('filter.placeholder')}
+            spellCheck={false}
+            onChange={(e) => setFilterText(e.target.value)}
+          />
         </div>
       )}
 
@@ -415,7 +481,12 @@ export default function LibraryPanel({ health }) {
             <small>{t('library.emptySub')}</small>
           </div>
         )}
-        {items.map((it) => (
+        {items.length > 0 && visibleItems.length === 0 && (
+          <div className="empty-hint">
+            <p>{t('filter.none')}</p>
+          </div>
+        )}
+        {visibleItems.map((it) => (
           <div key={it.key} className={`batch-row st-${it.state}`}>
             <div className="batch-row-main">
               <span className="batch-row-name" title={it.path}>{it.name}</span>

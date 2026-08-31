@@ -179,9 +179,9 @@ export async function fetchLibraryFolderTracks(index) {
 }
 
 export const PLATFORMS = [
-  { id: 'netease', label: 'NetEase' },
-  { id: 'qq', label: 'QQ Music' },
-  { id: 'kugou', label: 'KuGou' },
+  { id: 'netease', label: 'NetEase', short: 'NE' },
+  { id: 'qq', label: 'QQ Music', short: 'QQ' },
+  { id: 'kugou', label: 'KuGou', short: 'KG' },
 ];
 
 export const FORMAT_LABELS = {

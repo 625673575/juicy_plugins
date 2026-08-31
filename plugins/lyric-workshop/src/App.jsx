@@ -15,10 +15,21 @@ import {
   copyText,
 } from './lib/api.js';
 import { saveLyric } from './lib/save.js';
+import { buildExport, EXPORT_TARGETS } from './lib/matchPipeline.js';
 import { parseLyric, detectFormat } from './lib/parser/parse.js';
 import { buildDownloadLyric, extOfTarget } from './lib/parser/serialize.js';
+import {
+  getTheme,
+  setTheme as persistTheme,
+  getQuickTarget,
+  setQuickTarget as persistQuickTarget,
+  getHistory,
+  setHistory as persistHistory,
+  pushHistory,
+} from './lib/prefs.js';
 import BatchPanel from './BatchPanel.jsx';
 import LibraryPanel from './LibraryPanel.jsx';
+import { Toasts, toast } from './Toast.jsx';
 import { t as tx, lang, setLang } from './i18n.js';
 
 const t = tx;
@@ -29,6 +40,10 @@ const prioIndex = (fmt) => {
   const p = FORMAT_PRIORITY.indexOf(fmt);
   return p === -1 ? FORMAT_PRIORITY.length : p;
 };
+
+// 单曲搜索的平台列表 = 全平台聚合 + 各平台。聚合模式下并发搜三端并交错合并，
+// 每行结果自带 platform 字段（打开/一键下载都跟着行走，不再依赖全局选中平台）。
+const SEARCH_PLATFORMS = [{ id: 'all' }, ...PLATFORMS];
 
 const fmtTime = (ms) => {
   const totalSec = Math.max(0, Math.floor(ms / 1000));
@@ -72,16 +87,50 @@ function StatusChip({ tone, children }) {
   return <span className={`chip chip-${tone}`}>{children}</span>;
 }
 
-/** 左列结果行 */
-const SongRow = React.memo(function SongRow({ song, active, onClick }) {
+/** 左列结果行。quick: 'busy' | 'ok' | 'fail' | undefined（一键下载状态） */
+const SongRow = React.memo(function SongRow({
+  song,
+  active,
+  hi,
+  index,
+  showPlatform,
+  quick,
+  onClick,
+  onQuick,
+}) {
+  const plat = PLATFORMS.find((p) => p.id === song.platform);
   return (
-    <button type="button" className={`song-row${active ? ' active' : ''}`} onClick={onClick}>
+    <div
+      role="button"
+      tabIndex={-1}
+      className={`song-row${active ? ' active' : ''}${hi ? ' hi' : ''}`}
+      data-idx={index}
+      onClick={onClick}
+    >
       <div className="song-row-main">
         <span className="song-name">{song.name}</span>
-        <span className="song-meta">{song.artist}{song.album ? ` · ${song.album}` : ''}</span>
+        <span className="song-meta">
+          {showPlatform && plat && <span className="plat-badge">{plat.short}</span>}
+          {song.artist}
+          {song.album ? ` · ${song.album}` : ''}
+        </span>
       </div>
       <span className="song-dur">{fmtDurationBadge(song.durationMs)}</span>
-    </button>
+      {onQuick && (
+        <button
+          type="button"
+          className={`quick-btn q-${quick || 'idle'}`}
+          title={t('quick.title')}
+          disabled={quick === 'busy'}
+          onClick={(e) => {
+            e.stopPropagation();
+            onQuick();
+          }}
+        >
+          {quick === 'busy' ? '◌' : quick === 'ok' ? '✓' : quick === 'fail' ? '⚠' : '⬇'}
+        </button>
+      )}
+    </div>
   );
 });
 
@@ -203,6 +252,12 @@ function ExportCard({ title, desc, text, filename, highlight, onSave }) {
   );
 }
 
+/** 一键下载的格式标签（歌曲标题栏的分体按钮用） */
+function targetShortLabel(target) {
+  const f = EXPORT_TARGETS.find((x) => x.id === target);
+  return f?.short ?? target.toUpperCase();
+}
+
 // ----------------------------------------------------------------------------
 
 export default function App() {
@@ -217,15 +272,29 @@ export default function App() {
     setLang(next);
     setUiLang(next);
   }, [uiLang]);
-  const [platform, setPlatform] = useState(
-    PLATFORMS.some((p) => p.id === urlPlatform) ? urlPlatform : 'netease'
-  );
+  // 主题：light / dark（首帧前 main.jsx 已落 data-theme，这里只负责切换与持久化）
+  const [theme, setThemeState] = useState(getTheme());
+  const toggleTheme = useCallback(() => {
+    setThemeState((prev) => {
+      const next = prev === 'dark' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = next;
+      persistTheme(next);
+      return next;
+    });
+  }, []);
+  const [platform, setPlatform] = useState(() => {
+    if (PLATFORMS.some((p) => p.id === urlPlatform)) return urlPlatform;
+    if (urlPlatform === 'all') return 'all';
+    return 'all'; // 默认全平台聚合：一次搜索看遍三端
+  });
   const [keyword, setKeyword] = useState(urlQuery);
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [searchError, setSearchError] = useState('');
+  const [partialFail, setPartialFail] = useState(0); // 聚合搜索中失败的平台数
+  const [history, setHistoryState] = useState(getHistory);
 
   // ---- 选中歌曲与歌词载荷 ----
   const [selected, setSelected] = useState(null);
@@ -238,6 +307,20 @@ export default function App() {
   const [tab, setTab] = useState(
     ['preview', 'raw', 'export'].includes(urlTab) ? urlTab : 'preview'
   );
+
+  // ---- 一键下载：默认格式（持久化）+ 每行状态 ----
+  const [prefTarget, setPrefTargetState] = useState(getQuickTarget);
+  const [quickStates, setQuickStates] = useState({}); // key -> busy|ok|fail
+  const [qmenuOpen, setQmenuOpen] = useState(false);
+  const splitRef = useRef(null);
+
+  const setPrefTarget = useCallback((id) => {
+    setPrefTargetState(id);
+    persistQuickTarget(id);
+  }, []);
+
+  // ---- 键盘导航高亮行 ----
+  const [hiIdx, setHiIdx] = useState(-1);
 
   // ---- 播放模拟 ----
   const [playing, setPlaying] = useState(false);
@@ -252,7 +335,8 @@ export default function App() {
   const [pasteTrans, setPasteTrans] = useState('');
 
   const posRef = useRef(0);
-  const listWrapRef = useRef(null);
+  const listWrapRef = useRef(null); // 歌词滚动容器
+  const resultWrapRef = useRef(null); // 结果列表滚动容器
   const autoScrollSuspendUntil = useRef(0);
   const prevActiveRef = useRef(-1);
 
@@ -265,6 +349,38 @@ export default function App() {
     };
   }, []);
 
+  // ---- 搜索（支持 'all' 聚合：三端并发 + 交错合并）----
+  const runSearch = useCallback(async (plat, kw, limit, pageNum) => {
+    if (plat !== 'all') {
+      const res = await searchSongs(plat, kw, limit, pageNum);
+      return {
+        songs: res.songs.map((s) => ({ ...s, platform: plat })),
+        total: res.total ?? res.songs.length,
+        failed: 0,
+      };
+    }
+    const settled = await Promise.allSettled(
+      PLATFORMS.map(async (p) => ({
+        platform: p.id,
+        res: await searchSongs(p.id, kw, limit, pageNum),
+      }))
+    );
+    const ok = settled.filter((s) => s.status === 'fulfilled').map((s) => s.value);
+    const interleaved = [];
+    const maxLen = Math.max(0, ...ok.map((o) => o.res.songs.length));
+    for (let i = 0; i < maxLen; i++) {
+      for (const o of ok) {
+        const song = o.res.songs[i];
+        if (song) interleaved.push({ ...song, platform: o.platform });
+      }
+    }
+    return {
+      songs: interleaved,
+      total: ok.reduce((a, o) => a + (o.res.total ?? o.res.songs.length), 0),
+      failed: settled.length - ok.length,
+    };
+  }, []);
+
   // 深链自动流：?q=... 直达搜索并自动打开第 open 条结果（批量视图下不跑）
   const bootRef = useRef(false);
   useEffect(() => {
@@ -274,11 +390,11 @@ export default function App() {
     if (!q) return;
     (async () => {
       try {
-        const res = await searchSongs(platform, q, 25, 1);
-        setResults(res.songs);
-        setTotal(res.total ?? res.songs.length);
-        const song = res.songs[urlOpenIdx] ?? res.songs[0];
-        if (song) await openSong({ ...song, platform });
+        const { songs } = await runSearch(platform, q, 25, 1);
+        setResults(songs);
+        setTotal(songs.length);
+        const song = songs[urlOpenIdx] ?? songs[0];
+        if (song) await openSong(song);
       } catch (err) {
         setSearchError(err?.message || String(err));
       }
@@ -295,11 +411,21 @@ export default function App() {
       if (!kw || searching) return;
       setSearching(true);
       setSearchError('');
+      setPartialFail(0);
       try {
-        const res = await searchSongs(platform, kw, 25, nextPage);
-        setResults((prev) => (append ? [...prev, ...res.songs] : res.songs));
-        setTotal(res.total ?? res.songs.length);
+        const { songs, total: tot, failed } = await runSearch(platform, kw, 25, nextPage);
+        setResults((prev) => (append ? [...prev, ...songs] : songs));
+        setTotal(tot);
         setPage(nextPage);
+        setPartialFail(failed);
+        setHiIdx(-1);
+        if (!append) {
+          const next = pushHistory(history, kw);
+          if (next !== history) {
+            setHistoryState(next);
+            persistHistory(next);
+          }
+        }
       } catch (err) {
         setSearchError(err?.message || String(err));
         if (!append) {
@@ -310,8 +436,19 @@ export default function App() {
         setSearching(false);
       }
     },
-    [platform, searching]
+    [platform, searching, runSearch, history]
   );
+
+  // 切平台时若已有关键词，立即重搜（聚合 ↔ 单平台一键切换）
+  const pendingKwRef = useRef(null);
+  useEffect(() => {
+    if (pendingKwRef.current) {
+      const kw = pendingKwRef.current;
+      pendingKwRef.current = null;
+      doSearch(kw, 1, false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [platform]);
 
   // ---- 选中歌曲 → 拉歌词 ----
   const openSong = useCallback(async (song) => {
@@ -335,6 +472,124 @@ export default function App() {
       setLoadingLyric(false);
     }
   }, []);
+
+  // ---- 一键下载：任选一首（结果行 / 歌曲标题栏共用），按默认格式抓词并保存 ----
+  const quickKey = useCallback(
+    (song) => `${song.platform || ''}|${song.id || ''}|${song.hash || ''}`,
+    []
+  );
+  const doSave = useCallback(
+    async (filename, text) => {
+      if (health !== 'ok') {
+        downloadText(filename, text);
+        return { state: 'downloaded' };
+      }
+      const res = await saveLyric(filename, text);
+      if (res.state === 'error') {
+        downloadText(filename, text);
+        return { state: 'downloaded', warn: res.msg };
+      }
+      return res;
+    },
+    [health]
+  );
+  const quickDl = useCallback(
+    async (song) => {
+      if (!song?.platform) return;
+      const key = quickKey(song);
+      setQuickStates((prev) => ({ ...prev, [key]: 'busy' }));
+      try {
+        const res = await fetchLyric(song);
+        if (!res.data) throw new Error(t('quick.noLyric'));
+        const built = buildExport(res.data, prefTarget);
+        if (!built) throw new Error(t('quick.noLyric'));
+        const base = sanitizeName(`${song.artist ? `${song.artist} - ` : ''}${song.name}`);
+        const filename = `${base}.${built.ext}`;
+        const out = await doSave(filename, built.text);
+        if (out.state === 'error') throw new Error(out.msg || 'save failed');
+        setQuickStates((prev) => ({ ...prev, [key]: 'ok' }));
+        toast(
+          out.state === 'saved'
+            ? t('quick.saved', { path: out.path })
+            : t('quick.downloaded', { file: filename }),
+          'good',
+          4200
+        );
+      } catch (err) {
+        setQuickStates((prev) => ({ ...prev, [key]: 'fail' }));
+        toast(t('quick.fail', { msg: err?.message || String(err) }), 'warn', 5200);
+      }
+    },
+    [doSave, prefTarget, quickKey]
+  );
+  const headQuickState = selected ? quickStates[quickKey(selected)] : undefined;
+
+  // 一键格式下拉：点外面关闭
+  useEffect(() => {
+    if (!qmenuOpen) return undefined;
+    const close = (e) => {
+      if (!splitRef.current?.contains(e.target)) setQmenuOpen(false);
+    };
+    window.addEventListener('pointerdown', close);
+    return () => window.removeEventListener('pointerdown', close);
+  }, [qmenuOpen]);
+
+  // ---- 键盘操作：Ctrl/Cmd+K 聚焦搜索；↑↓ 选行；Enter 打开；Ctrl+Enter 一键下载 ----
+  const hiRef = useRef(-1);
+  hiRef.current = hiIdx;
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        if (view === 'search') {
+          inputRef.current?.focus();
+          inputRef.current?.select();
+        }
+        return;
+      }
+      if (view !== 'search') return;
+      const tag = e.target?.tagName;
+      const typing =
+        tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target?.isContentEditable;
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        const song = results[hiRef.current];
+        if (song) {
+          e.preventDefault();
+          quickDl(song);
+        }
+        return;
+      }
+      if (typing) {
+        if (e.key === 'Escape') e.target.blur?.();
+        return;
+      }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        if (results.length === 0) return;
+        e.preventDefault();
+        setHiIdx((prev) => {
+          const delta = e.key === 'ArrowDown' ? 1 : -1;
+          return Math.max(0, Math.min(results.length - 1, prev + delta));
+        });
+      } else if (e.key === 'Enter') {
+        const song = results[hiRef.current];
+        if (song) {
+          e.preventDefault();
+          openSong(song);
+          setHiIdx(hiRef.current);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [view, results, quickDl, openSong]);
+
+  // 高亮行滚进可视区
+  useEffect(() => {
+    if (hiIdx < 0) return;
+    const wrap = resultWrapRef.current;
+    const el = wrap?.querySelector(`[data-idx="${hiIdx}"]`);
+    el?.scrollIntoView({ block: 'nearest' });
+  }, [hiIdx]);
 
   // ---- 可选源列表 ----
   const sources = useMemo(() => {
@@ -501,7 +756,7 @@ export default function App() {
     });
   }, [pasteMain, pasteTrans]);
 
-  // ---- 搜索加载更多 ----
+  // ---- 搜索加载更多（聚合模式分页语义不明确，隐藏）----
   const loadMore = useCallback(
     () => doSearch(keywordRef.current, page + 1, true),
     [doSearch, page]
@@ -510,21 +765,7 @@ export default function App() {
   // ---------------------------------------------------------------- export --
   // 保存：本地服务在线时由后端写进目标文件夹（音乐文件夹），而不是浏览器的
   // 下载文件夹；失败或离线才回退 blob 下载，并在状态行里说明去向。
-  const doSave = useCallback(
-    async (filename, text) => {
-      if (health !== 'ok') {
-        downloadText(filename, text);
-        return { state: 'downloaded' };
-      }
-      const res = await saveLyric(filename, text);
-      if (res.state === 'error') {
-        downloadText(filename, text);
-        return { state: 'downloaded', warn: res.msg };
-      }
-      return res;
-    },
-    [health]
-  );
+  // （doSave 定义在前文 quickDl 之上）
 
   const exportTexts = useMemo(() => {
     if (!activeSource?.content || parsedLines.length === 0) return {};
@@ -543,10 +784,17 @@ export default function App() {
     !!parsedLines &&
     parsedLines.some((line) => line.words.length > 1 && line.words.some((w) => w.endTime > w.startTime));
 
+  const clearHistory = useCallback(() => {
+    setHistoryState([]);
+    persistHistory([]);
+  }, []);
+
   // ------------------------------------------------------------------ view --
 
   return (
     <div className="app-shell">
+      <Toasts />
+
       {/* ---------- 顶栏 ---------- */}
       <header className="topbar glass">
         <div className="brand">
@@ -585,11 +833,19 @@ export default function App() {
           </div>
           <button
             type="button"
-            className="vtab lang-switch"
+            className="icon-btn"
+            title={theme === 'dark' ? t('theme.toLight') : t('theme.toDark')}
+            onClick={toggleTheme}
+          >
+            {theme === 'dark' ? '☀' : '☾'}
+          </button>
+          <button
+            type="button"
+            className="icon-btn lang-switch"
             title={uiLang === 'zh' ? 'Switch to English' : '切换到中文'}
             onClick={toggleLang}
           >
-            {uiLang === 'zh' ? 'EN' : '中文'}
+            {uiLang === 'zh' ? 'EN' : '中'}
           </button>
           <StatusChip tone={health === 'ok' ? 'good' : health === 'off' ? 'warn' : 'muted'}>
             {health === 'ok' ? '● ' + t('status.online') : health === 'off' ? '○ ' + t('status.offline') : '◌ ' + t('status.checking')}
@@ -602,49 +858,72 @@ export default function App() {
       )}
 
       {/* ---------- 搜索区 ---------- */}
-      <section className="search-bar glass">
-        <div className="platform-tabs" role="tablist">
-          {PLATFORMS.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              role="tab"
-              aria-selected={platform === p.id}
-              className={`ptab${platform === p.id ? ' on' : ''}`}
-              disabled={health === 'off'}
-              onClick={() => setPlatform(p.id)}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-        <form
-          className="search-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            const v = inputRef.current?.value ?? '';
-            keywordRef.current = v;
-            setKeyword(v);
-            doSearch(v, 1, false);
-          }}
-        >
-          {/* 非受控：提交时以 DOM 值为准，避免程序化赋值（自动化/WebView 场景）丢事件 */}
-          <input
-            ref={inputRef}
-            className="search-input"
-            defaultValue={keyword}
-            placeholder={health === 'off' ? '' : t('search.placeholder')}
-            disabled={health === 'off'}
-            onChange={(e) => {
-              keywordRef.current = e.target.value;
-              setKeyword(e.target.value);
+      {view === 'search' && (
+        <section className="search-bar glass">
+          <div className="platform-tabs" role="tablist">
+            {SEARCH_PLATFORMS.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                role="tab"
+                aria-selected={platform === p.id}
+                className={`ptab${platform === p.id ? ' on' : ''}`}
+                disabled={health === 'off'}
+                title={p.id === 'all' ? t('platform.allTip') : undefined}
+                onClick={() => {
+                  if (p.id === platform) return;
+                  pendingKwRef.current = keywordRef.current;
+                  setPlatform(p.id);
+                }}
+              >
+                {p.id === 'all' ? `⇅ ${t('platform.all')}` : p.label}
+              </button>
+            ))}
+          </div>
+          <form
+            className="search-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const v = inputRef.current?.value ?? '';
+              keywordRef.current = v;
+              setKeyword(v);
+              doSearch(v, 1, false);
             }}
-          />
-          <button type="submit" className="btn primary" disabled={health === 'off' || searching}>
-            {searching ? t('search.searching') : t('search.button')}
-          </button>
-        </form>
-      </section>
+          >
+            {/* 非受控：提交时以 DOM 值为准，避免程序化赋值（自动化/WebView 场景）丢事件 */}
+            <input
+              ref={inputRef}
+              className="search-input"
+              defaultValue={keyword}
+              placeholder={health === 'off' ? '' : t('search.placeholder')}
+              disabled={health === 'off'}
+              onChange={(e) => {
+                keywordRef.current = e.target.value;
+                setKeyword(e.target.value);
+                setHiIdx(-1); // 重新输入即放弃键盘高亮，Enter 恢复为“执行搜索”
+              }}
+              onKeyDown={(e) => {
+                // 输入框里 ↑/↓ 也能预览选择结果，Enter 直接打开当前高亮行
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                  if (results.length === 0) return;
+                  e.preventDefault();
+                  setHiIdx((prev) => {
+                    const delta = e.key === 'ArrowDown' ? 1 : -1;
+                    return Math.max(0, Math.min(results.length - 1, prev < 0 ? (delta > 0 ? 0 : -1) : prev + delta));
+                  });
+                } else if (e.key === 'Enter' && hiIdx >= 0) {
+                  e.preventDefault();
+                  const song = results[hiIdx];
+                  if (song) openSong(song);
+                }
+              }}
+            />
+            <button type="submit" className="btn primary" disabled={health === 'off' || searching}>
+              {searching ? t('search.searching') : t('search.button')}
+            </button>
+          </form>
+        </section>
+      )}
 
       {/* ---------- 主体 ---------- */}
       {view === 'batch' ? (
@@ -668,32 +947,80 @@ export default function App() {
                     : t('search.empty.title')}
                 </h2>
               </div>
-              <div className="left-body">
+              <div className="left-body" ref={resultWrapRef}>
                 {searchError && <p className="error-text">⚠ {searchError}</p>}
-                {results.map((song, i) => (
-                  <SongRow
-                    key={`${song.id}-${song.hash}-${i}`}
-                    song={song}
-                    active={
-                      selected &&
-                      selected.id === song.id &&
-                      (song.hash || '') === (selected.hash || '')
-                    }
-                    onClick={() => openSong({ ...song, platform })}
-                  />
-                ))}
-                {results.length > 0 && results.length < total && (
+                {partialFail > 0 && (
+                  <p className="dim partial-note">◌ {t('search.partial', { n: partialFail })}</p>
+                )}
+                {searching &&
+                  results.length === 0 &&
+                  [0, 1, 2, 3, 4].map((i) => (
+                    <div key={i} className="skel-row">
+                      <div className="skel skel-a" />
+                      <div className="skel skel-b" />
+                    </div>
+                  ))}
+                {results.map((song, i) => {
+                  const key = `${song.platform}|${song.id}|${song.hash || ''}|${i}`;
+                  return (
+                    <SongRow
+                      key={key}
+                      index={i}
+                      song={song}
+                      active={
+                        selected &&
+                        selected.id === song.id &&
+                        (song.hash || '') === (selected.hash || '') &&
+                        (selected.platform || '') === (song.platform || '')
+                      }
+                      hi={hiIdx === i}
+                      showPlatform={platform === 'all'}
+                      quick={quickStates[`${song.platform || ''}|${song.id || ''}|${song.hash || ''}`]}
+                      onClick={() => {
+                        setHiIdx(i);
+                        openSong(song.platform ? song : { ...song, platform });
+                      }}
+                      onQuick={health === 'ok' ? () => quickDl(song.platform ? song : { ...song, platform }) : undefined}
+                    />
+                  );
+                })}
+                {results.length > 0 && results.length < total && platform !== 'all' && (
                   <button type="button" className="btn block" onClick={loadMore} disabled={searching}>
                     {searching ? '…' : '+'}
                   </button>
                 )}
                 {results.length === 0 && !searching && !searchError && (
                   <div className="empty-hint">
+                    {history.length > 0 && (
+                      <div className="hist-row">
+                        {history.map((h) => (
+                          <button
+                            key={h}
+                            type="button"
+                            className="hist-chip"
+                            onClick={() => {
+                              if (inputRef.current) inputRef.current.value = h;
+                              keywordRef.current = h;
+                              setKeyword(h);
+                              doSearch(h, 1, false);
+                            }}
+                          >
+                            {h}
+                          </button>
+                        ))}
+                        <button type="button" className="hist-clear" onClick={clearHistory}>
+                          {t('history.clear')}
+                        </button>
+                      </div>
+                    )}
                     <p>{t('search.empty.title')}</p>
                     <small>{t('search.empty.sub')}</small>
                   </div>
                 )}
               </div>
+              {results.length > 0 && (
+                <div className="kbd-hint">{t('kbd.hint')}</div>
+              )}
             </>
           ) : (
             <>
@@ -743,6 +1070,48 @@ export default function App() {
                       .join(' · ')}
                   </p>
                 </div>
+                {selected.platform && health === 'ok' && !loadingLyric && (
+                  <div className="split" ref={splitRef}>
+                    <button
+                      type="button"
+                      className="btn primary split-main"
+                      disabled={headQuickState === 'busy'}
+                      onClick={() => quickDl(selected)}
+                    >
+                      {headQuickState === 'busy'
+                        ? '◌ …'
+                        : `⬇ ${t('head.quickSave')} · ${targetShortLabel(prefTarget)}`}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn primary split-arrow"
+                      title={t('head.chooseFmt')}
+                      onClick={() => setQmenuOpen((o) => !o)}
+                    >
+                      ▾
+                    </button>
+                    {qmenuOpen && (
+                      <div className="menu" role="menu">
+                        {EXPORT_TARGETS.map((f) => (
+                          <button
+                            key={f.id}
+                            type="button"
+                            role="menuitem"
+                            className={`menu-item${f.id === prefTarget ? ' on' : ''}`}
+                            onClick={() => {
+                              setPrefTarget(f.id);
+                              setQmenuOpen(false);
+                              toast(t('quick.targetSet', { fmt: targetShortLabel(f.id) }), 'info', 2200);
+                            }}
+                          >
+                            <span className="menu-check">{f.id === prefTarget ? '✓' : ''}</span>
+                            {lang() === 'en' && f.labelEn ? f.labelEn : f.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {loadingLyric && <div className="status-line">{t('lyric.loading')}</div>}

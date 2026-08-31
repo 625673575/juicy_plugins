@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { PLATFORMS, dirnameOf, downloadText, saveTextTo } from './lib/api.js';
 import { EXPORT_TARGETS, matchAndBuild } from './lib/matchPipeline.js';
 import {
@@ -128,6 +128,9 @@ export default function BatchPanel({ health }) {
   const [progress, setProgress] = useState({ done: 0, total: 0, current: '' });
   const [logs, setLogs] = useState([]);
   const [unsupported, setUnsupported] = useState(false);
+  // 列表筛选：状态 chips + 文件名文本
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [filterText, setFilterText] = useState('');
   // 右键菜单：{x,y,item}
   const [ctx, setCtx] = useState(null);
 
@@ -367,15 +370,33 @@ export default function BatchPanel({ health }) {
   const runBatchRef = useRef(null);
   runBatchRef.current = runBatch;
 
-  // ---- 汇总 ----
-  const counts = items.reduce(
-    (acc, it) => {
-      acc[it.state] = (acc[it.state] || 0) + 1;
-      return acc;
-    },
-    {}
+  // ---- 汇总：状态计数 / 一键筛选 / 待下载目标数 ----
+  const counts = useMemo(() => {
+    const acc = { all: items.length, pending: 0, exists: 0, done: 0, miss: 0, error: 0 };
+    for (const it of items) {
+      if (acc[it.state] !== undefined) acc[it.state] += 1;
+    }
+    return acc;
+  }, [items]);
+
+  const runTargets = useMemo(
+    () =>
+      items.filter(
+        (it) => overwrite || it.state === S.PENDING || it.state === S.MISS || it.state === S.ERROR
+      ).length,
+    [items, overwrite]
   );
-  const hasTargets = items.some((it) => it.state === S.PENDING || it.state === S.MISS || it.state === S.ERROR);
+
+  const visibleItems = useMemo(() => {
+    const q = filterText.trim().toLowerCase();
+    return items.filter((it) => {
+      if (statusFilter !== 'all' && it.state !== statusFilter) return false;
+      if (q && !`${it.name}\n${it.path}`.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [items, statusFilter, filterText]);
+
+  const hasTargets = runTargets > 0;
 
   const badge = (it) => {
     switch (it.state) {
@@ -440,7 +461,7 @@ export default function BatchPanel({ health }) {
             disabled={scanning || !dirName || health !== 'ok'}
             title={hasTargets ? '' : t('batch.none')}
           >
-            ⬇ {t('batch.run')}
+            ⬇ {hasTargets ? t('batch.runCount', { n: runTargets }) : t('batch.run')}
           </button>
         )}
       </div>
@@ -454,12 +475,48 @@ export default function BatchPanel({ health }) {
             />
           </div>
           <span className="mono">
-            {progress.done}/{progress.total} {progress.current ? `· ${progress.current}` : ''}
+            {progress.done}/{progress.total}
+            {progress.total > 0 ? ` · ${Math.round((progress.done / progress.total) * 100)}%` : ''}
+            {progress.current ? ` · ${progress.current}` : ''}
           </span>
         </div>
       )}
 
       {unsupported && <div className="banner warn">{t('batch.unsupported')}</div>}
+
+      {/* 状态筛选行 */}
+      {items.length > 0 && (
+        <div className="filter-bar">
+          <div className="filter-chips">
+            {[
+              ['all', t('filter.all'), counts.all],
+              ['pending', t('batch.st.pending'), counts.pending],
+              ['exists', t('batch.st.exists'), counts.exists],
+              ['done', t('batch.st.done'), counts.done],
+              ['miss', t('batch.st.miss'), counts.miss],
+              ['error', t('batch.st.error'), counts.error],
+            ].map(([id, label, n]) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={`fchip fc-${id}${statusFilter === id ? ' on' : ''}`}
+                  disabled={n === 0 && id !== 'all'}
+                  onClick={() => setStatusFilter(id)}
+                >
+                  {label}
+                  <i>{n}</i>
+                </button>
+              ))}
+          </div>
+          <input
+            className="filter-input"
+            value={filterText}
+            placeholder={t('filter.placeholder')}
+            spellCheck={false}
+            onChange={(e) => setFilterText(e.target.value)}
+          />
+        </div>
+      )}
 
       {/* 列表 */}
       <div className="batch-list">
@@ -470,7 +527,12 @@ export default function BatchPanel({ health }) {
           </div>
         )}
         {scanning && <div className="status-line">{t('batch.scanning')}</div>}
-        {items.map((it) => (
+        {items.length > 0 && visibleItems.length === 0 && (
+          <div className="empty-hint">
+            <p>{t('filter.none')}</p>
+          </div>
+        )}
+        {visibleItems.map((it) => (
           <div
             key={it.key}
             className={`batch-row st-${it.state}`}
@@ -483,7 +545,18 @@ export default function BatchPanel({ health }) {
               <span className="batch-row-name" title={it.path}>{it.name}</span>
               <span className="batch-row-note">{it.note || ''}</span>
             </div>
-            <div className="batch-row-side">{badge(it)}</div>
+            <div className="batch-row-side">
+              <button
+                type="button"
+                className="row-dl"
+                title={t('batch.dlOne')}
+                disabled={running || health !== 'ok'}
+                onClick={() => processOneItem(it, { force: true })}
+              >
+                ⬇
+              </button>
+              {badge(it)}
+            </div>
           </div>
         ))}
       </div>

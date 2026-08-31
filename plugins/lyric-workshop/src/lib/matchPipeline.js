@@ -8,12 +8,12 @@ import { buildDownloadLyric } from './parser/serialize.js';
 
 export const RAW_EXT = { yrc: 'yrc', qrc: 'qrc', krc: 'krc', lys: 'lys', lrc: 'lrc', ttml: 'ttml' };
 
-/** 导出目标（UI 下拉选项；label 走 i18n，labelEn 为英文直译） */
+/** 导出目标（UI 下拉选项；label 走 i18n，labelEn 为英文直译，short 用于紧凑按钮） */
 export const EXPORT_TARGETS = [
-  { id: 'lrc', label: 'LRC 双语', labelEn: 'LRC bilingual', ext: 'lrc' },
-  { id: 'enhanced-lrc', label: 'Enhanced LRC', labelEn: 'Enhanced LRC', ext: 'lrc' },
-  { id: 'ttml', label: 'TTML', labelEn: 'TTML', ext: 'ttml' },
-  { id: 'raw', label: 'RAW 原始', labelEn: 'RAW original', ext: null },
+  { id: 'lrc', label: 'LRC 双语', labelEn: 'LRC bilingual', short: 'LRC', ext: 'lrc' },
+  { id: 'enhanced-lrc', label: 'Enhanced LRC', labelEn: 'Enhanced LRC', short: 'E-LRC', ext: 'lrc' },
+  { id: 'ttml', label: 'TTML', labelEn: 'TTML', short: 'TTML', ext: 'ttml' },
+  { id: 'raw', label: 'RAW 原始', labelEn: 'RAW original', short: 'RAW', ext: null },
 ];
 
 /** 由歌词载荷构建导出文本：raw 直存最优 variant，其余按 TTML 覆盖 > 平台回传顺序选源再序列化 */

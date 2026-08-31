@@ -3,6 +3,10 @@ import ReactDOM from 'react-dom/client';
 import App from './App.jsx';
 import './styles.css';
 import { t, lang } from './i18n.js';
+import { getTheme } from './lib/prefs.js';
+
+// 首帧前落主题标记，避免深色用户看到浅色闪屏。
+document.documentElement.dataset.theme = getTheme();
 
 // Apply detected language to <html lang>, document title and meta description.
 const L = lang();
