@@ -1,0 +1,11 @@
+{
+  "id": "pomodoro",
+  "name": "Pomodoro",
+  "version": "1.0.0",
+  "description": "Catrace-inspired pomodoro timer: focus/break cycles, session tracking, chime on completion",
+  "entry": "dist/index.html",
+  "window": {
+    "width": 420,
+    "height": 640
+  }
+}

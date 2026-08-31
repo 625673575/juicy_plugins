@@ -8,6 +8,14 @@
       "description": "Rich lyrics search and batch download for NetEase / QQ Music / KuGou (LRC / QRC / YRC / KRC / TTML, word-by-word highlighting)",
       "download": "https://github.com/625673575/juicy_plugins/releases/latest/download/lyric-workshop-1.2.1.zip",
       "sha256": "465fe6ac3f58a117294b27e201029e6a811433e20f66facaffd38fd69687725c"
+    },
+    {
+      "id": "pomodoro",
+      "name": "Pomodoro",
+      "version": "1.0.0",
+      "description": "Catrace-inspired pomodoro timer: focus/break cycles, session tracking, chime on completion",
+      "download": "https://github.com/625673575/juicy_plugins/releases/latest/download/pomodoro-1.0.0.zip",
+      "sha256": "d892b588dbe1b07c937acada70a99cc194aac674916cfc3c0656f5dbca4746bb"
     }
   ]
 }
