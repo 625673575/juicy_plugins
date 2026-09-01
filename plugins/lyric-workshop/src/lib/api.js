@@ -23,6 +23,26 @@ async function fetchJson(url, timeoutMs = 15000) {
   }
 }
 
+async function postJson(url, body, timeoutMs = 15000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    const json = await res.json().catch(() => null);
+    if (!res.ok || !json) {
+      throw new Error(json?.error || `HTTP ${res.status}`);
+    }
+    return json;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** 探测本地 API 是否可用（决定在线搜索 or 离线粘贴模式） */
 export async function checkHealth() {
   try {
@@ -60,7 +80,7 @@ export async function fetchLyric(song) {
   return json; // {platform, song, data}
 }
 
-/** 触发浏览器下载文本文件 */
+/** 触发浏览器下载文本文件（文件会落到浏览器的下载文件夹） */
 export function downloadText(filename, text) {
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -71,6 +91,45 @@ export function downloadText(filename, text) {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ---------------------------------------------------------------------------
+// 本地保存（后端 /api/save + /api/config）。WebView2 里 blob 下载只会进系统
+// 下载文件夹；要把歌词写进音乐文件夹必须走后端写盘。
+
+/** 目标文件夹（后端持久化，server/.settings.json）；未设置时返回 '' */
+export async function fetchSaveConfig() {
+  const json = await fetchJson(`${API_BASE}/api/config`, 5000);
+  if (!json.ok) throw new Error(json.error || 'config failed');
+  return json; // {ok, targetDir}
+}
+
+/** 持久化目标文件夹（目录必须已存在） */
+export async function putSaveConfig(targetDir) {
+  const json = await postJson(`${API_BASE}/api/config`, { targetDir }, 5000);
+  if (!json.ok) throw new Error(json.error || 'config failed');
+  return json;
+}
+
+/**
+ * 保存歌词文本到本地文件夹；返回 {path} 实际写入的绝对路径。
+ * @param dir 可选目标目录；缺省用后端记忆的目标文件夹（两者都没有时后端报 no-target）
+ */
+export async function saveTextTo(filename, text, dir) {
+  const body = { filename, content: text };
+  if (dir) body.dir = dir;
+  const json = await postJson(`${API_BASE}/api/save`, body);
+  if (!json.ok) throw new Error(json.error || 'save failed');
+  return json; // {ok, path}
+}
+
+/** "D:\Music\a.mp3" / "/home/me/a.flac" → 所在文件夹（根目录文件返回盘符/根） */
+export function dirnameOf(p) {
+  const norm = String(p || '').replace(/[\\/]+$/, '');
+  const i = Math.max(norm.lastIndexOf('\\'), norm.lastIndexOf('/'));
+  if (i <= 0) return '';
+  const dir = norm.slice(0, i);
+  return /[a-zA-Z]:$/.test(dir) ? `${dir}\\` : dir;
 }
 
 export async function copyText(text) {

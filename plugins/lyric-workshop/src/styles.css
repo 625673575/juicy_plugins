@@ -1191,3 +1191,80 @@ button {
   color: #bbb;
   cursor: default;
 }
+
+/* ------------------------------------------------------------ 曲库面板 / 保存状态 */
+
+.batch-toolbar.secondary {
+  padding: 10px 18px;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.batch-toolbar .batch-field.grow {
+  flex: 1;
+  min-width: 220px;
+}
+
+.target-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--ink-10);
+  background: rgba(255, 255, 255, 0.8);
+  border-radius: 8px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 11.5px;
+  color: var(--ink-80);
+  outline: none;
+}
+
+.target-input:focus {
+  border-color: var(--accent-strong);
+}
+
+.lib-brand {
+  font-weight: 700;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+.lib-hint {
+  font-size: 11.5px;
+  color: var(--ink-60);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 曲库列表行内「单曲下载」小按钮 */
+.row-dl {
+  border: 1px solid var(--ink-10);
+  background: rgba(255, 255, 255, 0.75);
+  border-radius: 999px;
+  height: 24px;
+  min-width: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--ink-60);
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+}
+
+.row-dl:hover:not(:disabled) {
+  border-color: var(--accent-strong);
+  color: var(--accent-strong);
+}
+
+.row-dl:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* 保存结果状态行（导出卡片 / 原文面板的操作行下） */
+.save-status {
+  flex-basis: 100%;
+  font-size: 11.5px;
+  color: var(--good);
+  word-break: break-all;
+}

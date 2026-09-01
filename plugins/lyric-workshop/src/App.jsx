@@ -14,9 +14,11 @@ import {
   downloadText,
   copyText,
 } from './lib/api.js';
+import { saveLyric } from './lib/save.js';
 import { parseLyric, detectFormat } from './lib/parser/parse.js';
 import { buildDownloadLyric, extOfTarget } from './lib/parser/serialize.js';
 import BatchPanel from './BatchPanel.jsx';
+import LibraryPanel from './LibraryPanel.jsx';
 import { t as tx, lang, setLang } from './i18n.js';
 
 const t = tx;
@@ -59,7 +61,9 @@ const urlOpenIdx = parseInt(URL_PARAMS.get('open') || '0', 10) || 0;
 const urlTab = URL_PARAMS.get('tab');
 const urlTimeMs = parseInt(URL_PARAMS.get('t') || '0', 10) || 0;
 const urlVariant = URL_PARAMS.get('variant'); // yrc | qrc | krc | lrc | ttml
-const urlView = URL_PARAMS.get('view') === 'batch' ? 'batch' : 'search';
+const urlView = ['batch', 'library'].includes(URL_PARAMS.get('view'))
+  ? URL_PARAMS.get('view')
+  : 'search';
 
 // ----------------------------------------------------------------------------
 // 小组件
@@ -138,9 +142,22 @@ const LineRow = React.memo(
       Math.floor(prev.progressMs / 250) === Math.floor(next.progressMs / 250))
 );
 
+/** 保存状态的展示文案（导出卡片与原文面板共用） */
+function saveStatusText(s) {
+  if (s.state === 'saving') return t('save.saving');
+  if (s.state === 'saved') return `✓ ${t('save.savedTo', { path: s.path })}`;
+  if (s.state === 'picked') return `✓ ${t('save.picked')}`;
+  if (s.state === 'downloaded') {
+    return s.warn ? `⚠ ${t('save.downloadedWarn', { msg: s.warn })}` : t('save.downloaded');
+  }
+  if (s.state === 'error') return `⚠ ${t('save.failed', { msg: s.msg || '' })}`;
+  return '';
+}
+
 /** 导出卡片 */
-function ExportCard({ title, desc, text, filename, highlight }) {
+function ExportCard({ title, desc, text, filename, highlight, onSave }) {
   const [copied, setCopied] = useState(false);
+  const [saveState, setSaveState] = useState(null);
   if (!text) return null;
   const kb = (new Blob([text]).size / 1024).toFixed(1);
   return (
@@ -155,7 +172,11 @@ function ExportCard({ title, desc, text, filename, highlight }) {
         <button
           type="button"
           className="btn primary"
-          onClick={() => downloadText(filename, text)}
+          disabled={saveState?.state === 'saving'}
+          onClick={async () => {
+            setSaveState({ state: 'saving' });
+            setSaveState(await onSave(filename, text));
+          }}
         >
           ⬇ {t('export.download')}
         </button>
@@ -172,6 +193,11 @@ function ExportCard({ title, desc, text, filename, highlight }) {
           {copied ? t('raw.copied') : t('raw.copy')}
         </button>
         <code className="export-file">{filename}</code>
+        {saveState && saveState.state !== 'cancel' && (
+          <div className={`save-status${saveState.state === 'error' ? ' error-text' : ''}`}>
+            {saveStatusText(saveState)}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -182,7 +208,7 @@ function ExportCard({ title, desc, text, filename, highlight }) {
 export default function App() {
   // ---- 服务状态 / 搜索 ----
   const [health, setHealth] = useState('checking'); // checking | ok | off
-  const [view, setView] = useState(urlView); // search | batch
+  const [view, setView] = useState(urlView); // search | batch | library
   // UI language: zh / en. Persisted by i18n (localStorage); bumping this state
   // re-renders every t() lookup with the new dictionary.
   const [uiLang, setUiLang] = useState(lang());
@@ -482,6 +508,24 @@ export default function App() {
   );
 
   // ---------------------------------------------------------------- export --
+  // 保存：本地服务在线时由后端写进目标文件夹（音乐文件夹），而不是浏览器的
+  // 下载文件夹；失败或离线才回退 blob 下载，并在状态行里说明去向。
+  const doSave = useCallback(
+    async (filename, text) => {
+      if (health !== 'ok') {
+        downloadText(filename, text);
+        return { state: 'downloaded' };
+      }
+      const res = await saveLyric(filename, text);
+      if (res.state === 'error') {
+        downloadText(filename, text);
+        return { state: 'downloaded', warn: res.msg };
+      }
+      return res;
+    },
+    [health]
+  );
+
   const exportTexts = useMemo(() => {
     if (!activeSource?.content || parsedLines.length === 0) return {};
     return {
@@ -528,6 +572,15 @@ export default function App() {
               onClick={() => setView('batch')}
             >
               📂 {t('view.batch')}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={view === 'library'}
+              className={`vtab${view === 'library' ? ' on' : ''}`}
+              onClick={() => setView('library')}
+            >
+              🎵 {t('view.library')}
             </button>
           </div>
           <button
@@ -597,6 +650,10 @@ export default function App() {
       {view === 'batch' ? (
         <main className="layout layout-batch">
           <BatchPanel health={health} />
+        </main>
+      ) : view === 'library' ? (
+        <main className="layout layout-batch">
+          <LibraryPanel health={health} />
         </main>
       ) : (
       <main className="layout">
@@ -816,6 +873,7 @@ export default function App() {
                     <RawPane
                       content={activeSource?.content ?? ''}
                       filename={rawFilename}
+                      onSave={doSave}
                     />
                   )}
 
@@ -828,18 +886,21 @@ export default function App() {
                         desc={t('export.lrc.desc')}
                         text={exportTexts.lrc}
                         filename={`${fileBase}.lrc`}
+                        onSave={doSave}
                       />
                       <ExportCard
                         title="Enhanced LRC"
                         desc={t('export.elrc.desc')}
                         text={exportTexts.enhancedLrc}
                         filename={`${fileBase}.lrc`}
+                        onSave={doSave}
                       />
                       <ExportCard
                         title="TTML"
                         desc={t('export.ttml.desc')}
                         text={exportTexts.ttml}
                         filename={`${fileBase}.ttml`}
+                        onSave={doSave}
                       />
                       {activeSource && (
                         <ExportCard
@@ -848,6 +909,7 @@ export default function App() {
                           text={activeSource.content}
                           filename={rawFilename}
                           highlight
+                          onSave={doSave}
                         />
                       )}
                       <p className="dim tip-line">{t('export.previewTip')}</p>
@@ -870,8 +932,9 @@ export default function App() {
 }
 
 /** 原文面板：等宽展示 + 复制/下载 */
-function RawPane({ content, filename }) {
+function RawPane({ content, filename, onSave }) {
   const [copied, setCopied] = useState(false);
+  const [saveState, setSaveState] = useState(null);
   return (
     <div className="raw-pane">
       <div className="raw-actions">
@@ -887,10 +950,23 @@ function RawPane({ content, filename }) {
         >
           {copied ? t('raw.copied') : t('raw.copy')}
         </button>
-        <button type="button" className="btn primary" onClick={() => downloadText(filename, content)}>
+        <button
+          type="button"
+          className="btn primary"
+          disabled={saveState?.state === 'saving'}
+          onClick={async () => {
+            setSaveState({ state: 'saving' });
+            setSaveState(await onSave(filename, content));
+          }}
+        >
           ⬇ {t('raw.download')}
         </button>
         <code className="export-file">{filename}</code>
+        {saveState && saveState.state !== 'cancel' && (
+          <div className={`save-status${saveState.state === 'error' ? ' error-text' : ''}`}>
+            {saveStatusText(saveState)}
+          </div>
+        )}
       </div>
       <pre className="raw-pre">{content}</pre>
     </div>

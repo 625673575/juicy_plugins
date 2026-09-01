@@ -1,8 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { PLATFORMS, searchSongs, fetchLyric, downloadText, fetchLibraryFolders, fetchLibraryFolderTracks } from './lib/api.js';
-import { parseLyric } from './lib/parser/parse.js';
-import { buildDownloadLyric } from './lib/parser/serialize.js';
-import { pickBestCandidate, buildSearchKeyword } from './lib/match.js';
+import { PLATFORMS, dirnameOf, downloadText, saveTextTo } from './lib/api.js';
+import { EXPORT_TARGETS, matchAndBuild } from './lib/matchPipeline.js';
 import {
   pickDirectory,
   getOpfsDirectory,
@@ -12,56 +10,13 @@ import {
   writeTextNextTo,
   readTextNextTo,
   supportsDirectoryPicker,
-  isDemucsStemBase,
 } from './lib/filelib.js';
 import { t as tx, lang } from './i18n.js';
 
 const t = tx;
 
-const RAW_EXT = { yrc: 'yrc', qrc: 'qrc', krc: 'krc', lys: 'lys', lrc: 'lrc', ttml: 'ttml' };
-
-const EXPORT_TARGETS = [
-  { id: 'lrc', label: 'LRC 双语', labelEn: 'LRC bilingual', ext: 'lrc' },
-  { id: 'enhanced-lrc', label: 'Enhanced LRC', labelEn: 'Enhanced LRC', ext: 'lrc' },
-  { id: 'ttml', label: 'TTML', labelEn: 'TTML', ext: 'ttml' },
-  { id: 'raw', label: 'RAW 原始', labelEn: 'RAW original', ext: null },
-];
-
 const BATCH_PARAMS =
   typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams();
-
-/** 由歌词载荷构建导出文本：raw 直存最优 variant，其余按 SPlayer 优先级选源再序列化 */
-function buildExport(lyData, target) {
-  if (!lyData || !lyData.variants?.length) return null;
-  if (target === 'raw') {
-    const v = lyData.variants[0];
-    return { text: v.content, ext: RAW_EXT[v.format] ?? 'txt' };
-  }
-  // 选源：TTML 覆盖优先，其次按平台回传顺序（服务器已按 yrc/qrc/krc > lrc 排好）
-  const sources = lyData.variants.map((v) => ({
-    format: v.format,
-    content: v.content,
-    translation: lyData.translation || '',
-    romaji: lyData.romaji || '',
-  }));
-  if (lyData.ttml) {
-    sources.push({ format: 'ttml', content: lyData.ttml, translation: '', romaji: '' });
-  }
-  const source = sources.find((s) => s.format === 'ttml') ?? sources[0];
-  let lines;
-  try {
-    lines = parseLyric(
-      { content: source.content, translation: source.translation, romaji: source.romaji },
-      source.format
-    );
-  } catch {
-    return null;
-  }
-  const text = buildDownloadLyric(lines, target);
-  if (!text) return null;
-  const ext = target === 'ttml' ? 'ttml' : 'lrc';
-  return { text, ext };
-}
 
 // ---------------------------------------------------------------- 演示种子
 
@@ -173,10 +128,6 @@ export default function BatchPanel({ health }) {
   const [progress, setProgress] = useState({ done: 0, total: 0, current: '' });
   const [logs, setLogs] = useState([]);
   const [unsupported, setUnsupported] = useState(false);
-  // JuicyPlayer 曲库来源（宿主 HTTP API）
-  const [folders, setFolders] = useState(null);
-  const [folderIdx, setFolderIdx] = useState('');
-  const [libLoading, setLibLoading] = useState(false);
   // 右键菜单：{x,y,item}
   const [ctx, setCtx] = useState(null);
 
@@ -235,32 +186,6 @@ export default function BatchPanel({ health }) {
   // ---- 单曲处理（批量循环与右键单首下载共用同一配置链路）----
   const processOneItem = useCallback(
     async (item, { force }) => {
-      const platformChain = fallback
-        ? [platform, ...PLATFORMS.map((p) => p.id).filter((p) => p !== platform)]
-        : [platform];
-
-      /** 在单个平台上完成 搜索→打分→拉词→构建；返回 {status, best?, built?, kw} */
-      const tryPlatform = async (platformId, meta) => {
-        const kw = buildSearchKeyword(meta.title, meta.artists, meta.artist);
-        const res = await searchSongs(platformId, kw, 20, 1);
-        const best = pickBestCandidate(
-          res.songs.map((s) => ({
-            name: s.name,
-            artist: s.artist,
-            album: s.album,
-            duration: s.durationMs,
-            song: s,
-          })),
-          meta
-        );
-        if (!best) return { status: 'no-match', kw };
-        const ly = await fetchLyric(best.song);
-        if (!ly.data) return { status: 'no-lyric', kw };
-        const built = buildExport(ly.data, format);
-        if (!built) return { status: 'no-content', kw };
-        return { status: 'ok', best, built, kw };
-      };
-
       patchItem(item.key, { state: S.MATCHING, note: '' });
       try {
         // 1) 元数据：曲库来源自带；本地文件走标签优先、文件名兜底
@@ -283,49 +208,48 @@ export default function BatchPanel({ health }) {
           return { ok: false };
         }
 
-        // 2) 依平台链依次尝试（网易云匿名搜索对热门歌常被翻唱刷屏，回退很关键）
+        // 2) 匹配 → 拉词 → 构建导出文本（matchPipeline，与曲库面板共用）
         patchItem(item.key, { state: S.WRITING });
-        let result = null;
-        const reasons = [];
-        for (const platformId of platformChain) {
-          try {
-            result = await tryPlatform(platformId, meta);
-          } catch (err) {
-            result = { status: 'error', kw: '', error: err };
-          }
-          if (result.status === 'ok') {
-            result.usedPlatform = platformId;
-            break;
-          }
-          reasons.push(`${platformLabel(platformId)}:${result.status}`);
-          if (!fallback) break;
-          await new Promise((r) => setTimeout(r, 200));
-        }
+        const result = await matchAndBuild({ meta, platform, fallback, format });
 
-        if (!result || result.status !== 'ok') {
+        if (result.status !== 'ok') {
           const note =
-            result && result.status === 'no-lyric'
+            result.status === 'no-lyric'
               ? t('batch.note.noLyric')
-              : t('batch.note.noMatch', { kw: (result?.kw || meta.title).slice(0, 40) });
+              : t('batch.note.noMatch', { kw: (result.kw || meta.title).slice(0, 40) });
           patchItem(item.key, { state: S.MISS, note });
-          log(`· ${item.path} → ${note}${reasons.length ? ` (${reasons.join(' / ')})` : ''}`);
+          log(
+            `· ${item.path} → ${note}${
+              result.reasons?.length ? ` (${result.reasons.join(' / ')})` : ''
+            }`
+          );
           return { ok: false };
         }
 
-        // 3) 写回（不支持写回的目录则逐个下载）
+        // 3) 写回：本地目录句柄直写；曲库来源（无句柄）走后端写进音频所在文件夹；
+        //    后端也不可用时才退化为浏览器下载（文件会落到下载文件夹）
         const { best, built, usedPlatform } = result;
         const fileName = `${item.base}.${built.ext}`;
         if (item.dirHandle) {
           await writeTextNextTo(item.dirHandle, fileName, built.text);
+          log(`✓ ${item.path} → ${fileName}`);
+        } else if (health === 'ok') {
+          try {
+            const res = await saveTextTo(fileName, built.text, dirnameOf(item.path) || undefined);
+            log(`✓ ${item.path} → ${res.path}`);
+          } catch (err) {
+            downloadText(fileName, built.text);
+            log(`⚠ ${t('save.fallbackLog', { msg: err?.message || err })}`);
+          }
         } else {
           downloadText(fileName, built.text);
+          log(`✓ ${item.path} → ${fileName} (${t('save.downloaded')})`);
         }
         patchItem(item.key, {
           state: S.DONE,
           note: `${platformLabel(usedPlatform)} · “${best.name}” · ${best.artist}`,
           fileName,
         });
-        log(`✓ ${item.path} → ${fileName}`);
         return { ok: true, fileName };
       } catch (err) {
         patchItem(item.key, { state: S.ERROR, note: err?.message || String(err) });
@@ -334,7 +258,7 @@ export default function BatchPanel({ health }) {
       }
     },
     // platformLabel 为组件内稳定纯函数，不列入依赖
-    [fallback, format, log, patchItem, platform]
+    [fallback, format, health, log, patchItem, platform]
   );
 
   // ---- 批量执行 ----
@@ -397,64 +321,6 @@ export default function BatchPanel({ health }) {
   const onCancel = useCallback(() => {
     cancelRef.current = true;
   }, []);
-
-  // ---- JuicyPlayer 曲库来源（宿主 HTTP API）----
-  const onPickLibrary = useCallback(async () => {
-    if (running || libLoading || health !== 'ok') return;
-    setLibLoading(true);
-    try {
-      const f = await fetchLibraryFolders();
-      setFolders(f);
-      if (f.length > 0) setFolderIdx(String(f[0].index));
-      log(`✓ ${t('batch.libLoaded', { n: f.length })}`);
-    } catch (err) {
-      log(`⚠ ${t('batch.libFail')}: ${err?.message || err}`);
-    } finally {
-      setLibLoading(false);
-    }
-  }, [health, libLoading, log, running]);
-
-  const onLoadLibraryFolder = useCallback(async () => {
-    if (running || scanning || folderIdx === '') return;
-    setScanning(true);
-    try {
-      const tracks = await fetchLibraryFolderTracks(Number(folderIdx));
-      const folderName = (folders || []).find((f) => String(f.index) === folderIdx)?.name || 'library';
-      const mapped = tracks
-        .filter((tr) => tr.filePath || tr.title)
-        .map((tr, i) => {
-          const filePath = tr.filePath || `${tr.title}.mp3`;
-          const name = filePath.split(/[\\/]/).pop();
-          const dot = name.lastIndexOf('.');
-          const base = dot > 0 ? name.slice(0, dot) : name;
-          return {
-            key: `lib#${tr.id || i}#${i}`,
-            name,
-            base,
-            ext: (dot > 0 ? name.slice(dot + 1) : 'mp3').toLowerCase(),
-            path: filePath,
-            file: null,
-            dirHandle: null,
-            meta: {
-              title: tr.title || base,
-              artists: (tr.artist || '').split(/[、,，]/).map((s) => s.trim()).filter(Boolean),
-              artist: tr.artist || '',
-              album: tr.album || '',
-              durationMs: Math.round((tr.duration || 0) * 1000),
-            },
-            state: S.PENDING,
-          };
-        })
-        .filter((it) => !isDemucsStemBase(it.base)); // demucs 分离产物不入列
-      setDirName(`🎵 JuicyPlayer · ${folderName}`);
-      setItems(mapped);
-      log(`✓ ${t('batch.libTracks', { n: mapped.length, name: folderName })}`);
-    } catch (err) {
-      log(`⚠ ${err?.message || err}`);
-    } finally {
-      setScanning(false);
-    }
-  }, [folderIdx, folders, running, scanning]);
 
   // ---- 右键菜单：单首下载（沿用批量配置，强制覆盖）----
   useEffect(() => {
@@ -576,27 +442,6 @@ export default function BatchPanel({ health }) {
           >
             ⬇ {t('batch.run')}
           </button>
-        )}
-      </div>
-
-      {/* JuicyPlayer 曲库来源 */}
-      <div className="batch-toolbar secondary">
-        <button type="button" className="btn" onClick={onPickLibrary} disabled={running || health !== 'ok' || libLoading}>
-          🎵 {libLoading ? '…' : t('batch.library')}
-        </button>
-        {folders && folders.length > 0 && (
-          <>
-            <select value={folderIdx} onChange={(e) => setFolderIdx(e.target.value)} disabled={running}>
-              {folders.map((f) => (
-                <option key={f.index} value={String(f.index)}>
-                  {f.name} ({f.trackCount})
-                </option>
-              ))}
-            </select>
-            <button type="button" className="btn" onClick={onLoadLibraryFolder} disabled={running || scanning}>
-              {t('batch.libLoad')}
-            </button>
-          </>
         )}
       </div>
 

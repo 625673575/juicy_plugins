@@ -9,14 +9,138 @@
  *   lyric   拉取歌词原文    GET /api/lyric?platform=..&id=..&mid=..&hash=..&name=..&durationMs=..
  *           返回 variants[]（各格式原始文本）+ translation + romaji + ttml(AMLL DB 覆盖)
  *   healthz 可用性探测      GET /api/healthz
+ *   config  目标文件夹      GET /api/config；POST/PUT /api/config {targetDir}（持久化到 server/.settings.json）
+ *   save    保存歌词文本    POST /api/save {filename, content, dir?}——WebView2 里 <a download>
+ *           只会落进系统下载文件夹，写回音乐文件夹必须由后端完成
  *
- * 全部 Node 原生实现（crypto/zlib/fetch），零第三方依赖。
+ * 全部 Node 原生实现（crypto/zlib/fetch/fs），零第三方依赖。
  */
+
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { searchNetease, lyricNetease } from "./netease.mjs";
 import { searchQQ, lyricQQ } from "./qqmusic.mjs";
 import { searchKugou, lyricKugou } from "./kugou.mjs";
 import { fetchTTML } from "./ttml.mjs";
+
+// ---------------------------------------------------------------------------
+// 目标文件夹持久化（server/.settings.json，随插件目录走）
+
+const SETTINGS_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), ".settings.json");
+
+let settingsCache = null;
+function loadSettings() {
+  if (settingsCache) return settingsCache;
+  try {
+    settingsCache = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"));
+  } catch {
+    settingsCache = {};
+  }
+  return settingsCache;
+}
+
+function saveSettings() {
+  try {
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settingsCache, null, 2), "utf8");
+  } catch {
+    /* 设置写不进去不致命：仅影响“记住目标文件夹” */
+  }
+}
+
+function isDirectory(dir) {
+  try {
+    return fs.statSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** 读取并解析 JSON 请求体（限制大小，防误用） */
+function readJsonBody(req, limit = 8 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        reject(new Error("request body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      } catch {
+        reject(new Error("invalid JSON body"));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// /api/config 目标文件夹
+
+function handleConfigGet(res) {
+  const s = loadSettings();
+  sendJson(res, 200, { ok: true, targetDir: typeof s.targetDir === "string" ? s.targetDir : "" });
+}
+
+async function handleConfigSet(req, res) {
+  const body = await readJsonBody(req, 64 * 1024);
+  const dir = typeof body.targetDir === "string" ? body.targetDir.trim() : "";
+  if (!dir) return sendJson(res, 400, { ok: false, error: "targetDir required" });
+  if (!isDirectory(dir)) return sendJson(res, 400, { ok: false, error: `not a directory: ${dir}` });
+  loadSettings().targetDir = dir;
+  saveSettings();
+  sendJson(res, 200, { ok: true, targetDir: dir });
+}
+
+// ---------------------------------------------------------------------------
+// /api/save 把歌词文本写入本地文件夹
+//
+// 安全面：服务只绑 127.0.0.1，但 CORS 全开，任意网页都可能打到本端口。
+// 因此这里只允许「纯文件名 + 歌词类扩展名 + 文本内容」，目录必须已存在，
+// 把最坏情况限制为“往音乐文件夹写一个 .lrc 文本”。
+
+const SAVE_EXTS = new Set(["lrc", "elrc", "ttml", "krc", "qrc", "yrc", "lys", "trc", "txt"]);
+
+async function handleSave(req, res) {
+  const body = await readJsonBody(req);
+  const filename = typeof body.filename === "string" ? body.filename.trim() : "";
+  const content = typeof body.content === "string" ? body.content : null;
+  const dir = typeof body.dir === "string" ? body.dir.trim() : "";
+
+  if (
+    !filename ||
+    filename.includes("/") ||
+    filename.includes("\\") ||
+    filename !== path.basename(filename)
+  ) {
+    return sendJson(res, 400, { ok: false, error: "filename must be a plain file name" });
+  }
+  const ext = path.extname(filename).slice(1).toLowerCase();
+  if (!SAVE_EXTS.has(ext)) {
+    return sendJson(res, 400, { ok: false, error: `extension .${ext || "?"} not allowed` });
+  }
+  if (content == null) return sendJson(res, 400, { ok: false, error: "content required" });
+
+  const targetDir = dir || loadSettings().targetDir || "";
+  if (!targetDir) {
+    return sendJson(res, 400, { ok: false, error: "no target folder configured", code: "no-target" });
+  }
+  if (!isDirectory(targetDir)) {
+    return sendJson(res, 400, { ok: false, error: `target folder not found: ${targetDir}` });
+  }
+
+  const target = path.join(targetDir, filename);
+  fs.writeFileSync(target, content, "utf8");
+  sendJson(res, 200, { ok: true, path: target });
+}
 
 /** 简单 TTL 缓存，避免重复打接口 */
 const CACHE_TTL_MS = 2 * 60 * 1000;
@@ -138,7 +262,7 @@ export async function handleApiRequest(req, res, { cors = false } = {}) {
 
   if (cors) {
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     if (req.method === "OPTIONS") {
       res.statusCode = 204;
@@ -154,6 +278,15 @@ export async function handleApiRequest(req, res, { cors = false } = {}) {
     }
     if (url.pathname === "/api/search") return (await handleSearch(url.searchParams, res), true);
     if (url.pathname === "/api/lyric") return (await handleLyric(url.searchParams, res), true);
+    if (url.pathname === "/api/config") {
+      if (req.method === "GET") return (handleConfigGet(res), true);
+      if (req.method === "POST" || req.method === "PUT") {
+        return (await handleConfigSet(req, res), true);
+      }
+    }
+    if (url.pathname === "/api/save" && req.method === "POST") {
+      return (await handleSave(req, res), true);
+    }
     sendJson(res, 404, { ok: false, error: `no route ${url.pathname}` });
     return true;
   } catch (err) {
