@@ -4,10 +4,10 @@
     {
       "id": "lyric-workshop",
       "name": "Lyric Workshop",
-      "version": "1.2.1",
-      "description": "Rich lyrics search and batch download for NetEase / QQ Music / KuGou (LRC / QRC / YRC / KRC / TTML, word-by-word highlighting)",
-      "download": "https://github.com/625673575/juicy_plugins/releases/latest/download/lyric-workshop-1.2.1.zip",
-      "sha256": "1b85d3ef7f809679e63f07ebbb91f56628b2b015105aa57b1eb99bc10040c6a6"
+      "version": "1.3.0",
+      "description": "Rich lyrics search and batch download for NetEase / QQ Music / KuGou (LRC / QRC / YRC / KRC / TTML, word-by-word highlighting). Saves into your JuicyPlayer library folders via a dedicated Library tab.",
+      "download": "https://github.com/625673575/juicy_plugins/releases/latest/download/lyric-workshop-1.3.0.zip",
+      "sha256": "ea8fc70f35fef671e108d2be3085bde520b1d35f595f036b563f60736f1ba586"
     },
     {
       "id": "pomodoro",
