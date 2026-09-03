@@ -16,6 +16,7 @@ import {
   saveTextTo,
 } from './lib/api.js';
 import { isDemucsStemBase } from './lib/filelib.js';
+import { canDetectLyricFiles, existingLyricExts } from './lib/hostfs.js';
 import { EXPORT_TARGETS, matchAndBuild } from './lib/matchPipeline.js';
 import { t as tx, lang } from './i18n.js';
 
@@ -23,6 +24,7 @@ const t = tx;
 
 const S = {
   PENDING: 'pending',
+  EXISTS: 'exists',
   MATCHING: 'matching',
   WRITING: 'writing',
   DONE: 'done',
@@ -97,6 +99,16 @@ export default function LibraryPanel({ health }) {
         setFolderName(name);
         setItems(mapped);
         log(`✓ ${t('library.tracks', { name, n: mapped.length })}`);
+        // Mark tracks whose lyrics already sit next to the audio (host
+        // native, when available). Async so the list renders immediately.
+        if (canDetectLyricFiles()) {
+          for (const it of mapped) {
+            existingLyricExts(it.path, it.base).then((exts) => {
+              if (exts && exts.length > 0)
+                patchItem(it.key, { state: 'exists', note: exts.join(' ') });
+            });
+          }
+        }
       } catch (err) {
         log(`⚠ ${err?.message || err}`);
       }
@@ -271,6 +283,7 @@ export default function LibraryPanel({ health }) {
   const badge = (it) => {
     switch (it.state) {
       case S.PENDING: return <span className="chip chip-muted">{t('batch.st.pending')}</span>;
+      case S.EXISTS: return <span className="chip chip-good">✓ {t('batch.st.exists')}</span>;
       case S.MATCHING: return <span className="chip chip-accent">…</span>;
       case S.WRITING: return <span className="chip chip-accent">✍</span>;
       case S.DONE: return <span className="chip chip-good">✓ {it.fileName}</span>;
