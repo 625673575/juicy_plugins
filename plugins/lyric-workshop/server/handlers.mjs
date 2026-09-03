@@ -17,6 +17,7 @@
  */
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,16 +29,30 @@ import { fetchTTML } from "./ttml.mjs";
 // ---------------------------------------------------------------------------
 // 目标文件夹持久化（server/.settings.json，随插件目录走）
 
-const SETTINGS_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), ".settings.json");
+// Settings live OUTSIDE the plugin folder: a plugin update replaces the
+// whole directory (atomic swap), which would wipe a .settings.json stored
+// next to the server. Legacy files are migrated on first read.
+const CONFIG_DIR = process.env.APPDATA
+  ? path.join(process.env.APPDATA, "JuicyPlayer", "Plugins")
+  : path.join(os.homedir(), ".config", "JuicyPlayer");
+const SETTINGS_FILE = path.join(CONFIG_DIR, "lyric-workshop.settings.json");
+const LEGACY_SETTINGS_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), ".settings.json");
 
 let settingsCache = null;
 function loadSettings() {
   if (settingsCache) return settingsCache;
-  try {
-    settingsCache = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"));
-  } catch {
-    settingsCache = {};
+  for (const file of [SETTINGS_FILE, LEGACY_SETTINGS_FILE]) {
+    try {
+      settingsCache = JSON.parse(fs.readFileSync(file, "utf8"));
+      break;
+    } catch {
+      /* try next */
+    }
   }
+  settingsCache = settingsCache || {};
+  // Persist at the new location immediately so the legacy copy (inside the
+  // plugin dir, wiped by updates) is no longer the source of truth.
+  saveSettings();
   return settingsCache;
 }
 

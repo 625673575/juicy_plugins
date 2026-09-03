@@ -209,7 +209,7 @@ const DICT = {
     'batch.cancelled': 'Cancelled',
     'batch.finish': 'Batch finished: {done}/{total} succeeded',
     'batch.st.exists': 'Has lyrics',
-    'batch.st.pending': 'Missing',
+    'batch.st.pending': 'No lyrics yet',
     'batch.st.miss': 'No match',
     'batch.note.noTitle': 'Cannot parse title from tags or filename',
     'batch.note.noMatch': 'No matching candidate: {kw}',
