@@ -7,7 +7,7 @@
       "version": "1.3.0",
       "description": "Rich lyrics search and batch download for NetEase / QQ Music / KuGou (LRC / QRC / YRC / KRC / TTML, word-by-word highlighting). Saves into your JuicyPlayer library folders via a dedicated Library tab.",
       "download": "https://github.com/625673575/juicy_plugins/releases/latest/download/lyric-workshop-1.3.0.zip",
-      "sha256": "b7568fa2d88158adb59c6fc3f425a6db4402204b6a119c335aceb703a02438ad"
+      "sha256": "33bf38192f683590c1c4ca6b95ea23076e66730d936994d39714af3175d710c6"
     },
     {
       "id": "pomodoro",
@@ -15,7 +15,7 @@
       "version": "1.0.0",
       "description": "Catrace-inspired pomodoro timer: focus/break cycles, session tracking, chime on completion",
       "download": "https://github.com/625673575/juicy_plugins/releases/latest/download/pomodoro-1.0.0.zip",
-      "sha256": "d892b588dbe1b07c937acada70a99cc194aac674916cfc3c0656f5dbca4746bb"
+      "sha256": "ab04d332bc39a0997581fd6fc2a52c117baf59252bff89e40cf7be63c55fcf6d"
     }
   ]
 }
